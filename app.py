@@ -18,7 +18,7 @@ st.set_page_config(
     page_title="AspectIQ",
     page_icon="🔷",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 
@@ -56,6 +56,7 @@ html, body, [class*="css"] {
 
 .stApp {
     background: var(--page);
+    overflow-x: hidden;
 }
 
 .block-container {
@@ -64,6 +65,21 @@ html, body, [class*="css"] {
     padding-bottom: 3rem;
     padding-left: 2rem;
     padding-right: 2rem;
+}
+
+@media (max-width: 900px) {
+    .block-container {
+        padding-left: .8rem !important;
+        padding-right: .8rem !important;
+        padding-bottom: 2rem !important;
+    }
+}
+
+@media (max-width: 600px) {
+    .block-container {
+        padding-left: .55rem !important;
+        padding-right: .55rem !important;
+    }
 }
 
 [data-testid="stMainBlockContainer"] {
@@ -100,10 +116,24 @@ button[data-testid="stSidebarCollapseButton"] {
 
 /* ---------- sidebar ---------- */
 section[data-testid="stSidebar"] {
-    width: 260px !important;
-    min-width: 260px !important;
     background: linear-gradient(180deg, #061126 0%, #091733 100%);
     border-right: 1px solid rgba(255,255,255,.06);
+}
+
+@media (min-width: 901px) {
+    section[data-testid="stSidebar"] {
+        width: 260px !important;
+        min-width: 260px !important;
+    }
+}
+
+@media (max-width: 900px) {
+    section[data-testid="stSidebar"] {
+        width: min(82vw, 300px) !important;
+        min-width: 0 !important;
+        max-width: 300px !important;
+        box-shadow: 12px 0 36px rgba(3,12,30,.22);
+    }
 }
 
 section[data-testid="stSidebar"] > div {
@@ -184,37 +214,6 @@ section[data-testid="stSidebar"] button[kind="primary"] {
     margin: 1.35rem .2rem 1rem .2rem;
 }
 
-.sidebar-user {
-    display:flex;
-    align-items:center;
-    gap:.65rem;
-    padding:.8rem .35rem;
-    color:#DDE7F8;
-}
-
-.avatar {
-    width:38px;
-    height:38px;
-    border-radius:50%;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    background:#1769B9;
-    color:white;
-    font-weight:800;
-}
-
-.user-name {
-    color:white;
-    font-size:.86rem;
-    font-weight:700;
-}
-
-.user-sub {
-    color:#8EA4C7;
-    font-size:.68rem;
-    margin-top:.1rem;
-}
 
 /* ---------- hero ---------- */
 .st-key-hero_shell {
@@ -562,6 +561,130 @@ small, .caption {
 .st-key-hero_shell .hero-emojis {
     color: #FFFFFF !important;
     filter: saturate(1.15) brightness(1.08);
+}
+
+
+/* =========================================================
+   RESPONSIVE / CORPORATE REFINEMENTS
+   ========================================================= */
+
+@media (max-width: 900px) {
+    .st-key-hero_shell {
+        width: 100% !important;
+        max-width: none !important;
+        margin: 0 0 .85rem 0 !important;
+        padding: 1.2rem 1rem 1.25rem 1rem !important;
+        border-radius: 0 0 14px 14px !important;
+    }
+
+    .st-key-hero_shell [data-testid="stHorizontalBlock"] {
+        display: block !important;
+    }
+
+    .st-key-hero_shell [data-testid="column"] {
+        width: 100% !important;
+        min-width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+
+    .st-key-hero_shell .hero-visual-card {
+        display: none !important;
+    }
+
+    .st-key-hero_shell .hero-title {
+        font-size: 2.45rem !important;
+        line-height: 1.03 !important;
+    }
+
+    .st-key-hero_shell .hero-subtitle {
+        font-size: 1rem !important;
+        line-height: 1.4 !important;
+    }
+
+    .st-key-hero_shell .hero-copy {
+        font-size: .92rem !important;
+        line-height: 1.55 !important;
+        margin-top: .7rem !important;
+    }
+
+    .st-key-hero_shell .hero-kicker {
+        font-size: .69rem !important;
+        letter-spacing: .10em !important;
+    }
+}
+
+@media (max-width: 600px) {
+    .st-key-hero_shell .hero-title {
+        font-size: 2.15rem !important;
+    }
+
+    .section-title {
+        font-size: 1.28rem !important;
+    }
+
+    .st-key-quick_card [data-testid="stHorizontalBlock"],
+    .st-key-analyze_card [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+    }
+
+    .st-key-quick_card [data-testid="column"],
+    .st-key-analyze_card [data-testid="column"] {
+        width: 100% !important;
+        min-width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+
+    .st-key-quick_card div[data-testid="stButton"] button,
+    .st-key-analyze_card div[data-testid="stButton"] button {
+        width: 100% !important;
+    }
+
+    .aspect-info {
+        grid-template-columns: 1fr !important;
+        gap: .65rem !important;
+    }
+
+    .kpi-card,
+    .aspect-card,
+    .panel-shell {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+}
+
+/* Compact landscape-phone layout */
+@media (min-width: 601px) and (max-width: 900px) and (orientation: landscape) {
+    .st-key-hero_shell {
+        padding-top: .95rem !important;
+        padding-bottom: 1rem !important;
+    }
+
+    .st-key-hero_shell .hero-title {
+        font-size: 2.1rem !important;
+    }
+
+    .st-key-hero_shell .hero-copy {
+        max-width: 94%;
+    }
+}
+
+
+/* Mobile navigation access: keep Streamlit's sidebar opener available. */
+@media (max-width: 900px) {
+    header[data-testid="stHeader"] {
+        display: flex !important;
+        height: 3rem !important;
+        min-height: 3rem !important;
+        background: #F7F9FD !important;
+        border-bottom: 1px solid #E5EAF2 !important;
+    }
+
+    button[data-testid="stSidebarCollapseButton"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
 }
 
 </style>
@@ -1341,11 +1464,11 @@ with st.sidebar:
     )
 
     nav_items = [
-        ("▦  Overview", "Overview"),
-        ("⌕  Analyze", "Analyze"),
-        ("◔  Insights", "Insights"),
-        ("⚗  Model Lab", "Model Lab"),
-        ("▤  Methodology", "Methodology"),
+        ("Overview", "Overview"),
+        ("Analyze", "Analyze"),
+        ("Insights", "Insights"),
+        ("Model Lab", "Model Lab"),
+        ("Methodology", "Methodology"),
     ]
 
     for label, destination in nav_items:
@@ -1371,21 +1494,6 @@ with st.sidebar:
         '<div class="sidebar-divider"></div>',
         unsafe_allow_html=True,
     )
-
-    st.markdown(
-        """
-<div class="sidebar-user">
-    <div class="avatar">DA</div>
-    <div>
-        <div class="user-name">Demo Admin</div>
-        <div class="user-sub">AspectIQ Project</div>
-    </div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-
 # ============================================================
 # PAGE — OVERVIEW
 # ============================================================
