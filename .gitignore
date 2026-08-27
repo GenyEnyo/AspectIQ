@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDEs / Editors
+.idea/
+*.iml
+.vscode/
+
+# Windows
+Thumbs.db
+
+# macOS
+.DS_Store
+
+# Secrets
+.streamlit/secrets.toml
+.env
+
+# Gensim downloaded GloVe cache
+gensim-data/
+
+# Large intermediate ML features
+outputs/features/
+data/embeddings/
+
+# Raw training files not needed by deployed application
+data/raw/
+
+# Logs
+*.log

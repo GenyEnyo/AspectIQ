@@ -1,0 +1,12 @@
+{
+    "task": "3-class",
+    "model": "Logistic Regression",
+    "representation": "Enhanced 300d",
+    "dimensions": 300,
+    "class_weight": "balanced",
+    "selection_metric": "Training cross-validation Macro F1",
+    "cv_macro_f1": 0.6082211158139371,
+    "test_accuracy": 0.6751990898748578,
+    "test_macro_f1": 0.6069437728293958,
+    "test_macro_roc_auc": 0.8311883330566733
+}
