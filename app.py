@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import re
 import xml.etree.ElementTree as ET
 
 import nltk
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
 
 
 # ============================================================
@@ -23,696 +26,83 @@ st.set_page_config(
 
 
 # ============================================================
-# GLOBAL CSS — CLOSELY MATCHES THE APPROVED MOCKUP
+# STYLES
 # ============================================================
 
-st.markdown(
-    """
-<style>
-:root {
-    --navy-950: #061126;
-    --navy-900: #08152D;
-    --navy-800: #0E1D3B;
-    --blue: #1769FF;
-    --blue-2: #2B7CFF;
-    --page: #F7F9FD;
-    --card: #FFFFFF;
-    --line: #E5EAF2;
-    --text: #172033;
-    --muted: #6E788B;
-    --green: #23A447;
-    --green-bg: #F2FCF4;
-    --red: #E23939;
-    --red-bg: #FFF3F3;
-    --orange: #F59E0B;
-    --purple: #7C4DFF;
-    --teal: #159A9A;
-}
+BASE_DIR = Path(__file__).resolve().parent
+STYLE_FILE = BASE_DIR / "styles" / "main.css"
 
-/* ---------- global ---------- */
-html, body, [class*="css"] {
-    font-family: "Inter", "Segoe UI", Arial, sans-serif;
-}
 
-.stApp {
-    background: var(--page);
-    overflow-x: hidden;
-}
+def load_css(css_path: Path) -> None:
+    """Load the application stylesheet from a separate CSS file."""
+    if not css_path.exists():
+        st.error(f"Stylesheet not found: {css_path}")
+        st.stop()
 
-.block-container {
-    max-width: 1500px;
-    padding-top: 0 !important;
-    padding-bottom: 3rem;
-    padding-left: 2rem;
-    padding-right: 2rem;
-}
+    css = css_path.read_text(encoding="utf-8")
+    st.markdown(
+        f"<style>{css}</style>",
+        unsafe_allow_html=True,
+    )
 
-@media (max-width: 900px) {
-    .block-container {
-        padding-left: .8rem !important;
-        padding-right: .8rem !important;
-        padding-bottom: 2rem !important;
-    }
-}
 
-@media (max-width: 600px) {
-    .block-container {
-        padding-left: .55rem !important;
-        padding-right: .55rem !important;
-    }
-}
-
-[data-testid="stMainBlockContainer"] {
-    padding-top: 0 !important;
-    margin-top: 0 !important;
-}
-
-main[data-testid="stMain"] {
-    padding-top: 0 !important;
-    margin-top: 0 !important;
-}
-
-div[data-testid="stAppViewContainer"] > section.main {
-    padding-top: 0 !important;
-}
-
-#MainMenu,
-footer,
-div[data-testid="stToolbar"],
-div[data-testid="stDecoration"],
-button[data-testid="stBaseButton-headerNoPadding"] {
-    display: none !important;
-}
-
-header[data-testid="stHeader"] {
-    height: 0 !important;
-    min-height: 0 !important;
-    background: transparent !important;
-}
-
-button[data-testid="stSidebarCollapseButton"] {
-    display: none !important;
-}
-
-/* ---------- sidebar ---------- */
-section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #061126 0%, #091733 100%);
-    border-right: 1px solid rgba(255,255,255,.06);
-}
-
-@media (min-width: 901px) {
-    section[data-testid="stSidebar"] {
-        width: 260px !important;
-        min-width: 260px !important;
-    }
-}
-
-@media (max-width: 900px) {
-    section[data-testid="stSidebar"] {
-        width: min(82vw, 300px) !important;
-        min-width: 0 !important;
-        max-width: 300px !important;
-        box-shadow: 12px 0 36px rgba(3,12,30,.22);
-    }
-}
-
-section[data-testid="stSidebar"] > div {
-    padding: 1.35rem 1.05rem 1.2rem 1.05rem;
-}
-
-.sidebar-brand {
-    display: flex;
-    align-items: center;
-    gap: .8rem;
-    margin: .15rem .15rem 1.55rem .15rem;
-}
-
-.logo-box {
-    width: 44px;
-    height: 44px;
-    border-radius: 13px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-size: 1.45rem;
-    font-weight: 900;
-    background: linear-gradient(145deg, #3987FF, #2D61F4);
-    box-shadow: 0 10px 24px rgba(45,97,244,.35);
-}
-
-.logo-name {
-    color: white;
-    font-size: 1.35rem;
-    font-weight: 850;
-    line-height: 1.05;
-}
-
-.logo-sub {
-    color: #8FA4C8;
-    font-size: .72rem;
-    margin-top: .2rem;
-}
-
-/* sidebar Streamlit buttons */
-section[data-testid="stSidebar"] div[data-testid="stButton"] {
-    margin-bottom: .42rem;
-}
-
-section[data-testid="stSidebar"] div[data-testid="stButton"] button {
-    width: 100%;
-    min-height: 46px;
-    border-radius: 11px;
-    justify-content: flex-start;
-    padding-left: .9rem;
-    font-weight: 650;
-    box-shadow: none;
-}
-
-/* secondary nav */
-section[data-testid="stSidebar"] button[kind="secondary"] {
-    color: #E5ECF8 !important;
-    background: transparent !important;
-    border: 1px solid transparent !important;
-}
-
-section[data-testid="stSidebar"] button[kind="secondary"]:hover {
-    color: white !important;
-    background: rgba(255,255,255,.06) !important;
-}
-
-/* active nav */
-section[data-testid="stSidebar"] button[kind="primary"] {
-    color: white !important;
-    background: linear-gradient(90deg, #1E62E8, #2A72F4) !important;
-    border: 0 !important;
-    box-shadow: 0 8px 18px rgba(31,105,242,.28) !important;
-}
-
-.sidebar-divider {
-    border-top: 1px solid rgba(255,255,255,.10);
-    margin: 1.35rem .2rem 1rem .2rem;
-}
-
-
-/* ---------- hero ---------- */
-.st-key-hero_shell {
-    width: 92% !important;
-    max-width: 1180px !important;
-    margin: 0 auto 1rem auto !important;
-    background:
-      radial-gradient(circle at 78% 28%, rgba(56,115,255,.18), transparent 23%),
-      radial-gradient(circle at 91% 78%, rgba(27,108,255,.12), transparent 22%),
-      linear-gradient(135deg, #071226 0%, #0B1733 55%, #071126 100%);
-    border-radius: 0 0 18px 18px;
-    padding: 1.35rem 1.7rem 1.3rem 1.7rem;
-    box-shadow: 0 14px 34px rgba(14,29,58,.14);
-    overflow: hidden;
-}
-
-.st-key-hero_shell .hero-kicker {
-    color:#8EB5FF !important;
-    font-size:.78rem;
-    letter-spacing:.14em;
-    text-transform:uppercase;
-    font-weight:850;
-    margin-bottom:.45rem;
-    text-shadow: 0 1px 10px rgba(85,140,255,.22);
-}
-
-.st-key-hero_shell .hero-title {
-    color:#FFFFFF !important;
-    font-size:2.85rem;
-    line-height:1;
-    letter-spacing:-.035em;
-    font-weight:850;
-    margin:0;
-}
-
-.st-key-hero_shell .hero-subtitle {
-    color:#D9E7FF !important;
-    font-size:1.05rem;
-    font-weight:650;
-    margin-top:.45rem;
-}
-
-.st-key-hero_shell .hero-copy {
-    color:#F1F5FF !important;
-    line-height:1.5;
-    font-size:.90rem;
-    margin-top:.75rem;
-    max-width:700px;
-    font-weight:450;
-}
-
-.st-key-hero_actions button {
-    min-height: 47px;
-    border-radius: 12px;
-    font-weight: 800;
-}
-
-/* blue CTA */
-.st-key-hero_analyze button {
-    background: linear-gradient(90deg, #1769FF, #2381FF) !important;
-    color:white !important;
-    border:0 !important;
-    box-shadow:0 8px 18px rgba(23,105,255,.25);
-}
-
-/* ghost CTA */
-.st-key-hero_upload button {
-    background: rgba(255,255,255,.03) !important;
-    color:#F2F6FF !important;
-    border:1px solid rgba(255,255,255,.35) !important;
-}
-
-.hero-visual-card {
-    margin-left:auto;
-    width:88%;
-    max-width:300px;
-    min-height:155px;
-    border-radius:20px;
-    padding:1rem 1.1rem;
-    background:linear-gradient(145deg, rgba(27,49,90,.96), rgba(14,32,65,.90));
-    border:1px solid rgba(108,155,255,.22);
-    box-shadow:0 16px 40px rgba(0,0,0,.25);
-}
-
-.st-key-hero_shell .hero-visual-title {
-    font-size:.73rem;
-    color:#FFFFFF !important;
-    font-weight:850;
-    letter-spacing:.04em;
-}
-
-.hero-bars {
-    height:78px;
-    display:flex;
-    align-items:flex-end;
-    gap:10px;
-    padding:.7rem .25rem .25rem .25rem;
-}
-
-.hero-bars i {
-    display:block;
-    flex:1;
-    border-radius:8px 8px 2px 2px;
-    background:linear-gradient(180deg,#7FE4FF,#3A80FF);
-    box-shadow:0 3px 14px rgba(62,141,255,.30);
-}
-
-.hero-emojis {
-    text-align:right;
-    font-size:1.45rem;
-    letter-spacing:.35rem;
-    margin-top:.55rem;
-}
-
-/* ---------- quick input card ---------- */
-.st-key-quick_card,
-.st-key-analyze_card {
-    background:white;
-    border:1px solid var(--line);
-    border-radius:18px;
-    padding:1.05rem 1.2rem 1rem 1.2rem;
-    box-shadow:0 10px 30px rgba(26,42,71,.07);
-    margin-bottom:1rem;
-}
-
-.section-kicker {
-    color:#276EF1;
-    font-size:.75rem;
-    letter-spacing:.12em;
-    text-transform:uppercase;
-    font-weight:850;
-}
-
-.section-title {
-    color:var(--text);
-    font-size:1.52rem;
-    font-weight:850;
-    margin:.18rem 0 .75rem 0;
-}
-
-.stTextArea textarea {
-    background:#FBFCFE !important;
-    border:1px solid #DDE4EE !important;
-    border-radius:12px !important;
-    color:#243047 !important;
-    box-shadow:none !important;
-}
-
-.stTextArea textarea:focus {
-    border:1px solid #9CBDF8 !important;
-    box-shadow:0 0 0 3px rgba(37,105,255,.08) !important;
-}
-
-/* buttons main */
-div[data-testid="stButton"] button[kind="primary"] {
-    background:linear-gradient(90deg,#1769FF,#2B7CFF);
-    color:white;
-    border:0;
-    border-radius:12px;
-    font-weight:800;
-    min-height:45px;
-    box-shadow:0 8px 18px rgba(23,105,255,.22);
-}
-
-/* ---------- KPI cards ---------- */
-.kpi-card {
-    background:white;
-    border:1px solid var(--line);
-    border-radius:16px;
-    padding:1rem 1rem;
-    box-shadow:0 7px 23px rgba(25,38,67,.055);
-    min-height:86px;
-}
-
-.kpi-wrap {
-    display:flex;
-    align-items:center;
-    gap:.85rem;
-}
-
-.kpi-icon {
-    width:48px;
-    height:48px;
-    border-radius:13px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    font-size:1.25rem;
-}
-
-.i-blue {background:#EAF2FF;color:#2468E8;}
-.i-purple {background:#F0E9FF;color:#7C4DFF;}
-.i-teal {background:#E8F7F6;color:#159A9A;}
-.i-orange {background:#FFF3DE;color:#F08B00;}
-
-.kpi-label {
-    color:var(--muted);
-    font-size:.76rem;
-    margin-bottom:.08rem;
-}
-
-.kpi-value {
-    color:var(--text);
-    font-size:1.33rem;
-    line-height:1.1;
-    font-weight:900;
-}
-
-/* ---------- aspect cards ---------- */
-.aspect-card {
-    border-radius:18px;
-    padding:.9rem 1rem;
-    min-height:136px;
-    box-shadow:0 7px 22px rgba(25,38,67,.045);
-}
-
-.aspect-positive {
-    background:linear-gradient(180deg,#FAFFFB,#F1FBF4);
-    border:1.5px solid #79CB8C;
-}
-
-.aspect-negative {
-    background:linear-gradient(180deg,#FFF9F9,#FFF1F1);
-    border:1.5px solid #EF8C8C;
-}
-
-.aspect-neutral {
-    background:linear-gradient(180deg,#FFFDF8,#FFF7E8);
-    border:1.5px solid #F0C36E;
-}
-
-.aspect-top {
-    display:flex;
-    align-items:center;
-    gap:.78rem;
-}
-
-.aspect-icon {
-    width:53px;
-    height:53px;
-    border-radius:50%;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    background:white;
-    box-shadow:0 4px 14px rgba(25,38,67,.08);
-    font-size:1.4rem;
-}
-
-.aspect-name {
-    font-size:1.15rem;
-    font-weight:900;
-    color:var(--text);
-}
-
-.aspect-pill {
-    display:inline-block;
-    margin-top:.25rem;
-    padding:.26rem .58rem;
-    border-radius:999px;
-    font-size:.72rem;
-    font-weight:850;
-}
-
-.p-positive {background:#DDF5E3;color:#17803A;}
-.p-negative {background:#FFE0E0;color:#C92C2C;}
-.p-neutral {background:#FFF0C7;color:#AC6900;}
-
-.aspect-info {
-    display:grid;
-    grid-template-columns:1fr 1.35fr;
-    gap:1rem;
-    margin-top:.85rem;
-}
-
-.meta-label {
-    color:var(--muted);
-    font-size:.71rem;
-}
-
-.meta-value {
-    color:var(--text);
-    font-size:.9rem;
-    font-weight:750;
-}
-
-.progress-track {
-    height:7px;
-    border-radius:999px;
-    background:rgba(116,124,142,.18);
-    margin-top:.35rem;
-    overflow:hidden;
-}
-
-.progress-fill {
-    height:100%;
-    border-radius:999px;
-}
-
-/* ---------- panels ---------- */
-.panel-shell {
-    background:white;
-    border:1px solid var(--line);
-    border-radius:18px;
-    padding:1rem 1rem .7rem 1rem;
-    box-shadow:0 7px 22px rgba(25,38,67,.05);
-}
-
-.panel-title {
-    color:var(--text);
-    font-size:1rem;
-    font-weight:850;
-    margin-bottom:.35rem;
-}
-
-/* ---------- tables ---------- */
-div[data-testid="stDataFrame"] {
-    border:1px solid var(--line);
-    border-radius:14px;
-    overflow:hidden;
-}
-
-/* ---------- typography ---------- */
-small, .caption {
-    color:var(--muted);
-}
-
-@media (max-width: 900px) {
-    .hero-title {font-size:2.6rem;}
-    .hero-visual-card {display:none;}
-}
-
-/* Hero contrast safeguards */
-.st-key-hero_shell,
-.st-key-hero_shell * {
-    opacity: 1 !important;
-}
-
-.st-key-hero_shell button,
-.st-key-hero_shell button p,
-.st-key-hero_shell button span {
-    color: #FFFFFF !important;
-}
-
-.st-key-hero_shell .hero-emojis {
-    color: #FFFFFF !important;
-    filter: saturate(1.15) brightness(1.08);
-}
-
-
-/* =========================================================
-   RESPONSIVE / CORPORATE REFINEMENTS
-   ========================================================= */
-
-@media (max-width: 900px) {
-    .st-key-hero_shell {
-        width: 100% !important;
-        max-width: none !important;
-        margin: 0 0 .85rem 0 !important;
-        padding: 1.2rem 1rem 1.25rem 1rem !important;
-        border-radius: 0 0 14px 14px !important;
-    }
-
-    .st-key-hero_shell [data-testid="stHorizontalBlock"] {
-        display: block !important;
-    }
-
-    .st-key-hero_shell [data-testid="column"] {
-        width: 100% !important;
-        min-width: 100% !important;
-        flex: 1 1 100% !important;
-    }
-
-    .st-key-hero_shell .hero-visual-card {
-        display: none !important;
-    }
-
-    .st-key-hero_shell .hero-title {
-        font-size: 2.45rem !important;
-        line-height: 1.03 !important;
-    }
-
-    .st-key-hero_shell .hero-subtitle {
-        font-size: 1rem !important;
-        line-height: 1.4 !important;
-    }
-
-    .st-key-hero_shell .hero-copy {
-        font-size: .92rem !important;
-        line-height: 1.55 !important;
-        margin-top: .7rem !important;
-    }
-
-    .st-key-hero_shell .hero-kicker {
-        font-size: .69rem !important;
-        letter-spacing: .10em !important;
-    }
-}
-
-@media (max-width: 600px) {
-    .st-key-hero_shell .hero-title {
-        font-size: 2.15rem !important;
-    }
-
-    .section-title {
-        font-size: 1.28rem !important;
-    }
-
-    .st-key-quick_card [data-testid="stHorizontalBlock"],
-    .st-key-analyze_card [data-testid="stHorizontalBlock"] {
-        flex-wrap: wrap !important;
-    }
-
-    .st-key-quick_card [data-testid="column"],
-    .st-key-analyze_card [data-testid="column"] {
-        width: 100% !important;
-        min-width: 100% !important;
-        flex: 1 1 100% !important;
-    }
-
-    .st-key-quick_card div[data-testid="stButton"] button,
-    .st-key-analyze_card div[data-testid="stButton"] button {
-        width: 100% !important;
-    }
-
-    .aspect-info {
-        grid-template-columns: 1fr !important;
-        gap: .65rem !important;
-    }
-
-    .kpi-card,
-    .aspect-card,
-    .panel-shell {
-        width: 100% !important;
-        max-width: 100% !important;
-        box-sizing: border-box !important;
-    }
-}
-
-/* Compact landscape-phone layout */
-@media (min-width: 601px) and (max-width: 900px) and (orientation: landscape) {
-    .st-key-hero_shell {
-        padding-top: .95rem !important;
-        padding-bottom: 1rem !important;
-    }
-
-    .st-key-hero_shell .hero-title {
-        font-size: 2.1rem !important;
-    }
-
-    .st-key-hero_shell .hero-copy {
-        max-width: 94%;
-    }
-}
-
-
-/* Mobile navigation access: keep Streamlit's sidebar opener available. */
-@media (max-width: 900px) {
-    header[data-testid="stHeader"] {
-        display: flex !important;
-        height: 3rem !important;
-        min-height: 3rem !important;
-        background: #F7F9FD !important;
-        border-bottom: 1px solid #E5EAF2 !important;
-    }
-
-    button[data-testid="stSidebarCollapseButton"] {
-        display: flex !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-    }
-}
-
-</style>
-""",
-    unsafe_allow_html=True,
-)
+load_css(STYLE_FILE)
 
 
 # ============================================================
-# NLTK
+# NLTK — LOCAL + STREAMLIT CLOUD SAFE
 # ============================================================
 
 @st.cache_resource
 def prepare_nltk_resources():
-    for resource in [
+    """
+    Download NLTK resources once per application process.
+
+    Streamlit Community Cloud provides /tmp as writable ephemeral storage.
+    For local Windows execution, the project-local .nltk_data directory is
+    used when /tmp is not available.
+    """
+    cloud_tmp = Path("/tmp")
+
+    nltk_directory = (
+        cloud_tmp / "nltk_data"
+        if cloud_tmp.exists()
+        else BASE_DIR / ".nltk_data"
+    )
+
+    nltk_directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    nltk_path = str(nltk_directory)
+
+    if nltk_path not in nltk.data.path:
+        nltk.data.path.insert(
+            0,
+            nltk_path,
+        )
+
+    resources = [
         "punkt",
         "punkt_tab",
         "stopwords",
         "wordnet",
         "omw-1.4",
         "averaged_perceptron_tagger_eng",
-    ]:
-        nltk.download(resource, quiet=True)
+    ]
 
-    return True
+    for resource in resources:
+        nltk.download(
+            resource,
+            download_dir=nltk_path,
+            quiet=True,
+        )
+
+    return nltk_path
 
 
-prepare_nltk_resources()
+NLTK_DATA_PATH = prepare_nltk_resources()
 
 
 # ============================================================
@@ -724,15 +114,21 @@ from src.prediction import (
     load_prediction_assets,
     predict_multiple_aspects,
 )
+from src.preprocessing import preprocess_text
 
 
 # ============================================================
 # PATHS
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = BASE_DIR / "outputs" / "results"
 FIGURE_DIR = BASE_DIR / "outputs" / "figures"
+TRAIN_DATA_FILE = (
+    BASE_DIR
+    / "data"
+    / "processed"
+    / "absa_train_preprocessed.csv"
+)
 
 
 # ============================================================
@@ -907,6 +303,229 @@ def read_uploaded_file(uploaded_file):
         "Unsupported file type. Use TXT, CSV, or XML."
     )
 
+
+
+# ============================================================
+# CORPUS / TEACHING HELPERS
+# ============================================================
+
+@st.cache_data
+def load_training_corpus():
+    """Load the processed SemEval training corpus once."""
+    if not TRAIN_DATA_FILE.exists():
+        return pd.DataFrame()
+
+    return pd.read_csv(TRAIN_DATA_FILE)
+
+
+def first_existing_column(df, candidates):
+    """Return the first candidate column that exists in the DataFrame."""
+    for column in candidates:
+        if column in df.columns:
+            return column
+
+    return None
+
+
+def instructional_preprocessing_steps(text):
+    """
+    Create transparent intermediate text-processing steps for teaching/demo.
+
+    These stages are inspection aids inspired by the classroom practical.
+    They do not replace the production preprocessing pipeline. The final
+    model-ready output is always produced by src.preprocessing.preprocess_text.
+    """
+    raw_text = str(text or "")
+    lowercase = raw_text.lower()
+
+    no_html = re.sub(
+        r"<.*?>",
+        " ",
+        lowercase,
+    )
+
+    no_urls = re.sub(
+        r"https?://\\S+|www\\.\\S+",
+        " ",
+        no_html,
+    )
+
+    normalized = re.sub(
+        r"\\s+",
+        " ",
+        no_urls,
+    ).strip()
+
+    tokens = (
+        word_tokenize(normalized)
+        if normalized
+        else []
+    )
+
+    stop_words = set(
+        stopwords.words("english")
+    )
+
+    # Keep words that can materially affect sentiment interpretation.
+    preserved_sentiment_terms = {
+        "no",
+        "not",
+        "nor",
+        "never",
+        "but",
+        "however",
+        "very",
+        "too",
+    }
+
+    filtered_tokens = [
+        token
+        for token in tokens
+        if (
+            token.lower() not in stop_words
+            or token.lower()
+            in preserved_sentiment_terms
+        )
+    ]
+
+    return {
+        "Original Text": raw_text,
+        "Lowercase": lowercase,
+        "HTML / URL Normalisation": normalized,
+        "Tokens": tokens,
+        "Stopword-Filtered Tokens": filtered_tokens,
+        "Inspection Text": " ".join(
+            filtered_tokens
+        ),
+    }
+
+
+def safe_preprocess_text(text):
+    """Normalise the project's preprocessing output for display."""
+    result = preprocess_text(text)
+
+    if isinstance(result, str):
+        return result
+
+    if isinstance(result, (list, tuple)):
+        return " ".join(
+            str(item)
+            for item in result
+        )
+
+    return str(result)
+
+
+
+def build_submitted_reviews_dataframe(analyses):
+    """
+    Build one row per review from the text/file supplied by the user.
+
+    This is the primary dataset shown in Data Explorer.
+    """
+    rows = []
+
+    for analysis in analyses:
+        sentiments = analysis.get(
+            "sentiments",
+            [],
+        )
+
+        aspects = [
+            result.get(
+                "aspect",
+                "",
+            )
+            for result in sentiments
+            if result.get(
+                "aspect"
+            )
+        ]
+
+        sentiment_labels = [
+            str(
+                result.get(
+                    "sentiment",
+                    ""
+                )
+            ).title()
+            for result in sentiments
+            if result.get(
+                "sentiment"
+            )
+        ]
+
+        rows.append(
+            {
+                "Review ID": analysis.get(
+                    "review_id"
+                ),
+                "Review": analysis.get(
+                    "text",
+                    "",
+                ),
+                "Detected Domain": analysis.get(
+                    "domain",
+                    {},
+                ).get(
+                    "domain",
+                    "Unknown",
+                ),
+                "Domain Confidence": round(
+                    float(
+                        analysis.get(
+                            "domain",
+                            {},
+                        ).get(
+                            "confidence",
+                            0.0,
+                        )
+                    )
+                    * 100,
+                    2,
+                ),
+                "Aspects Detected": len(
+                    aspects
+                ),
+                "Aspects": ", ".join(
+                    aspects
+                ),
+                "Sentiments": ", ".join(
+                    sentiment_labels
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def build_preprocessing_dataset(analyses):
+    """
+    Build one row per submitted review with the actual model-ready text.
+    """
+    rows = []
+
+    for analysis in analyses:
+        review_text = str(
+            analysis.get(
+                "text",
+                "",
+            )
+        )
+
+        rows.append(
+            {
+                "Review ID": analysis.get(
+                    "review_id"
+                ),
+                "Original Text": review_text,
+                "Model-Ready Text": safe_preprocess_text(
+                    review_text
+                ),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 # ============================================================
 # ANALYSIS
@@ -1456,39 +1075,68 @@ with st.sidebar:
     <div class="logo-box">A</div>
     <div>
         <div class="logo-name">AspectIQ</div>
-        <div class="logo-sub">Sentiment Intelligence</div>
+        <div class="logo-sub">Customer Experience Analytics</div>
     </div>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    nav_items = [
-        ("Overview", "Overview"),
-        ("Analyze", "Analyze"),
-        ("Insights", "Insights"),
-        ("Model Lab", "Model Lab"),
-        ("Methodology", "Methodology"),
+    navigation_groups = [
+        (
+            "OVERVIEW",
+            [
+                ("Overview", "Overview"),
+            ],
+        ),
+        (
+            "ANALYSIS",
+            [
+                ("Analyze", "Analyze"),
+                ("Insights", "Insights"),
+            ],
+        ),
+        (
+            "DATA & METHODS",
+            [
+                ("Data Explorer", "Data Explorer"),
+                ("Preprocessing", "Preprocessing"),
+            ],
+        ),
+        (
+            "MODEL & RESEARCH",
+            [
+                ("Model Lab", "Model Lab"),
+                ("Methodology", "Methodology"),
+            ],
+        ),
     ]
 
-    for label, destination in nav_items:
-        is_active = (
-            st.session_state.page
-            == destination
+    for group_name, nav_items in navigation_groups:
+
+        st.markdown(
+            f'<div class="nav-section-label">{group_name}</div>',
+            unsafe_allow_html=True,
         )
 
-        if st.button(
-            label,
-            key=f"nav_{destination}",
-            type=(
-                "primary"
-                if is_active
-                else "secondary"
-            ),
-            use_container_width=True,
-        ):
-            st.session_state.page = destination
-            st.rerun()
+        for label, destination in nav_items:
+            is_active = (
+                st.session_state.page
+                == destination
+            )
+
+            if st.button(
+                label,
+                key=f"nav_{destination}",
+                type=(
+                    "primary"
+                    if is_active
+                    else "secondary"
+                ),
+                use_container_width=True,
+            ):
+                st.session_state.page = destination
+                st.rerun()
 
     st.markdown(
         '<div class="sidebar-divider"></div>',
@@ -1864,6 +1512,660 @@ elif st.session_state.page == "Insights":
             use_container_width=True,
             hide_index=True,
         )
+
+
+# ============================================================
+# PAGE — DATA EXPLORER
+# ============================================================
+
+elif st.session_state.page == "Data Explorer":
+
+    render_hero()
+
+    st.markdown(
+        '<div class="section-kicker">Data Explorer</div>'
+        '<div class="section-title">Current analysis data</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.analyses:
+        st.info(
+            "No user data is available yet. Enter review text or upload a "
+            "file on the Analyze page, run the analysis, and the submitted "
+            "data will appear here."
+        )
+
+        if st.button(
+            "Go to Analyze",
+            type="primary",
+            key="data_explorer_go_analyze",
+        ):
+            st.session_state.page = "Analyze"
+            st.rerun()
+
+    else:
+        review_df = build_submitted_reviews_dataframe(
+            st.session_state.analyses
+        )
+
+        aspect_df = st.session_state.results_df.copy()
+
+        metric_cols = st.columns(4)
+
+        with metric_cols[0]:
+            st.metric(
+                "Reviews Submitted",
+                f"{len(review_df):,}",
+            )
+
+        with metric_cols[1]:
+            st.metric(
+                "Aspects Detected",
+                (
+                    f"{len(aspect_df):,}"
+                    if not aspect_df.empty
+                    else "0"
+                ),
+            )
+
+        with metric_cols[2]:
+            st.metric(
+                "Domains Detected",
+                (
+                    review_df[
+                        "Detected Domain"
+                    ].nunique()
+                    if not review_df.empty
+                    else 0
+                ),
+            )
+
+        with metric_cols[3]:
+            st.metric(
+                "Unique Aspects",
+                (
+                    aspect_df[
+                        "Aspect"
+                    ].nunique()
+                    if (
+                        not aspect_df.empty
+                        and "Aspect"
+                        in aspect_df.columns
+                    )
+                    else 0
+                ),
+            )
+
+        review_tab, aspect_tab = st.tabs(
+            [
+                "Submitted Reviews",
+                "Aspect-Level Analysis",
+            ]
+        )
+
+        with review_tab:
+            st.caption(
+                "This table contains the text supplied by the user, whether "
+                "entered directly or loaded from an uploaded file."
+            )
+
+            domain_values = sorted(
+                review_df[
+                    "Detected Domain"
+                ]
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+            filter_col1, filter_col2 = st.columns(
+                [1, 2]
+            )
+
+            with filter_col1:
+                selected_domains = st.multiselect(
+                    "Detected Domain",
+                    domain_values,
+                    default=domain_values,
+                    key="submitted_review_domains",
+                )
+
+            with filter_col2:
+                review_search = st.text_input(
+                    "Search review text",
+                    placeholder=(
+                        "Search words or phrases in the submitted reviews"
+                    ),
+                    key="submitted_review_search",
+                )
+
+            filtered_reviews = review_df.copy()
+
+            if selected_domains:
+                filtered_reviews = filtered_reviews[
+                    filtered_reviews[
+                        "Detected Domain"
+                    ]
+                    .astype(str)
+                    .isin(
+                        selected_domains
+                    )
+                ]
+
+            if review_search.strip():
+                filtered_reviews = filtered_reviews[
+                    filtered_reviews[
+                        "Review"
+                    ]
+                    .astype(str)
+                    .str.contains(
+                        review_search.strip(),
+                        case=False,
+                        na=False,
+                    )
+                ]
+
+            st.caption(
+                f"Showing {len(filtered_reviews):,} of "
+                f"{len(review_df):,} submitted review(s)."
+            )
+
+            st.dataframe(
+                filtered_reviews,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            if not filtered_reviews.empty:
+                domain_counts = (
+                    filtered_reviews[
+                        "Detected Domain"
+                    ]
+                    .value_counts()
+                    .rename_axis("Domain")
+                    .reset_index(name="Reviews")
+                )
+
+                fig = px.bar(
+                    domain_counts,
+                    x="Domain",
+                    y="Reviews",
+                    text="Reviews",
+                    title="Detected Domain Distribution",
+                )
+
+                fig.update_traces(
+                    marker_color="#2C6FF2"
+                )
+
+                fig.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                )
+
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                    config={
+                        "displayModeBar": False
+                    },
+                )
+
+        with aspect_tab:
+            if aspect_df.empty:
+                st.warning(
+                    "The submitted review data is available, but no aspects "
+                    "were detected for the current analysis."
+                )
+
+            else:
+                filter_columns = st.columns(3)
+
+                with filter_columns[0]:
+                    domain_values = sorted(
+                        aspect_df[
+                            "Detected Domain"
+                        ]
+                        .dropna()
+                        .astype(str)
+                        .unique()
+                        .tolist()
+                    )
+
+                    selected_domains = st.multiselect(
+                        "Domain",
+                        domain_values,
+                        default=domain_values,
+                        key="aspect_data_domains",
+                    )
+
+                with filter_columns[1]:
+                    sentiment_values = sorted(
+                        aspect_df[
+                            "Sentiment"
+                        ]
+                        .dropna()
+                        .astype(str)
+                        .unique()
+                        .tolist()
+                    )
+
+                    selected_sentiments = st.multiselect(
+                        "Sentiment",
+                        sentiment_values,
+                        default=sentiment_values,
+                        key="aspect_data_sentiments",
+                    )
+
+                with filter_columns[2]:
+                    aspect_search = st.text_input(
+                        "Aspect contains",
+                        placeholder=(
+                            "e.g. screen, battery, service"
+                        ),
+                        key="aspect_data_search",
+                    )
+
+                filtered_aspects = aspect_df.copy()
+
+                if selected_domains:
+                    filtered_aspects = filtered_aspects[
+                        filtered_aspects[
+                            "Detected Domain"
+                        ]
+                        .astype(str)
+                        .isin(
+                            selected_domains
+                        )
+                    ]
+
+                if selected_sentiments:
+                    filtered_aspects = filtered_aspects[
+                        filtered_aspects[
+                            "Sentiment"
+                        ]
+                        .astype(str)
+                        .isin(
+                            selected_sentiments
+                        )
+                    ]
+
+                if aspect_search.strip():
+                    filtered_aspects = filtered_aspects[
+                        filtered_aspects[
+                            "Aspect"
+                        ]
+                        .astype(str)
+                        .str.contains(
+                            aspect_search.strip(),
+                            case=False,
+                            na=False,
+                        )
+                    ]
+
+                st.caption(
+                    f"Showing {len(filtered_aspects):,} of "
+                    f"{len(aspect_df):,} detected aspect result(s)."
+                )
+
+                st.dataframe(
+                    filtered_aspects,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                if not filtered_aspects.empty:
+                    chart_left, chart_right = st.columns(2)
+
+                    with chart_left:
+                        sentiment_counts = (
+                            filtered_aspects[
+                                "Sentiment"
+                            ]
+                            .value_counts()
+                            .rename_axis("Sentiment")
+                            .reset_index(name="Count")
+                        )
+
+                        fig = px.bar(
+                            sentiment_counts,
+                            x="Sentiment",
+                            y="Count",
+                            text="Count",
+                            title="Current Sentiment Distribution",
+                            color="Sentiment",
+                            color_discrete_map={
+                                "Positive": "#23A447",
+                                "Negative": "#E23939",
+                                "Neutral": "#F59E0B",
+                            },
+                        )
+
+                        fig.update_layout(
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                        )
+
+                        st.plotly_chart(
+                            fig,
+                            use_container_width=True,
+                            config={
+                                "displayModeBar": False
+                            },
+                        )
+
+                    with chart_right:
+                        top_aspects = (
+                            filtered_aspects[
+                                "Aspect"
+                            ]
+                            .dropna()
+                            .astype(str)
+                            .value_counts()
+                            .head(12)
+                            .rename_axis("Aspect")
+                            .reset_index(name="Count")
+                        )
+
+                        fig = px.bar(
+                            top_aspects,
+                            x="Count",
+                            y="Aspect",
+                            orientation="h",
+                            text="Count",
+                            title="Current Detected Aspects",
+                        )
+
+                        fig.update_traces(
+                            marker_color="#2C6FF2"
+                        )
+
+                        fig.update_layout(
+                            yaxis={
+                                "categoryorder":
+                                    "total ascending"
+                            },
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                        )
+
+                        st.plotly_chart(
+                            fig,
+                            use_container_width=True,
+                            config={
+                                "displayModeBar": False
+                            },
+                        )
+
+        # Training data is retained only as an optional academic reference.
+        with st.expander(
+            "Reference: SemEval training corpus",
+            expanded=False,
+        ):
+            training_df = load_training_corpus()
+
+            if training_df.empty:
+                st.caption(
+                    "Training corpus is not available in this deployment."
+                )
+            else:
+                st.caption(
+                    "This is the model-development reference dataset, not "
+                    "the user's current analysis data."
+                )
+
+                st.dataframe(
+                    training_df.head(50),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+
+# ============================================================
+# PAGE — PREPROCESSING
+# ============================================================
+
+elif st.session_state.page == "Preprocessing":
+
+    render_hero()
+
+    st.markdown(
+        '<div class="section-kicker">Preprocessing</div>'
+        '<div class="section-title">Current input transformation</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.analyses:
+        st.info(
+            "No submitted text is available yet. Enter text or upload a "
+            "review file on the Analyze page and run the analysis first."
+        )
+
+        if st.button(
+            "Go to Analyze",
+            type="primary",
+            key="preprocess_go_analyze",
+        ):
+            st.session_state.page = "Analyze"
+            st.rerun()
+
+    else:
+        preprocessing_df = build_preprocessing_dataset(
+            st.session_state.analyses
+        )
+
+        st.caption(
+            "The preprocessing shown below is applied to the text that was "
+            "actually entered or uploaded by the user in the current analysis."
+        )
+
+        if len(preprocessing_df) > 1:
+            review_options = preprocessing_df[
+                "Review ID"
+            ].tolist()
+
+            selected_review_id = st.selectbox(
+                "Select submitted review",
+                review_options,
+                format_func=lambda value: (
+                    f"Review {value}"
+                ),
+                key="preprocessing_review_selector",
+            )
+        else:
+            selected_review_id = preprocessing_df[
+                "Review ID"
+            ].iloc[0]
+
+        selected_row = preprocessing_df[
+            preprocessing_df[
+                "Review ID"
+            ]
+            == selected_review_id
+        ].iloc[0]
+
+        preprocessing_text = selected_row[
+            "Original Text"
+        ]
+
+        steps = instructional_preprocessing_steps(
+            preprocessing_text
+        )
+
+        final_model_text = selected_row[
+            "Model-Ready Text"
+        ]
+
+        summary_cols = st.columns(3)
+
+        with summary_cols[0]:
+            st.metric(
+                "Selected Review",
+                selected_review_id,
+            )
+
+        with summary_cols[1]:
+            st.metric(
+                "Original Tokens",
+                len(
+                    steps[
+                        "Tokens"
+                    ]
+                ),
+            )
+
+        with summary_cols[2]:
+            model_tokens = (
+                final_model_text.split()
+                if final_model_text
+                else []
+            )
+
+            st.metric(
+                "Model-Ready Tokens",
+                len(
+                    model_tokens
+                ),
+            )
+
+        st.markdown(
+            '<div class="section-title" style="margin-top:1rem;">'
+            'Transformation stages'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        step_rows = [
+            {
+                "Stage": "1. Original Text",
+                "Output": steps[
+                    "Original Text"
+                ],
+            },
+            {
+                "Stage": "2. Lowercase",
+                "Output": steps[
+                    "Lowercase"
+                ],
+            },
+            {
+                "Stage": (
+                    "3. HTML / URL Normalisation"
+                ),
+                "Output": steps[
+                    "HTML / URL Normalisation"
+                ],
+            },
+            {
+                "Stage": "4. Tokenisation",
+                "Output": " | ".join(
+                    steps[
+                        "Tokens"
+                    ]
+                ),
+            },
+            {
+                "Stage": (
+                    "5. Stopword Inspection"
+                ),
+                "Output": " | ".join(
+                    steps[
+                        "Stopword-Filtered Tokens"
+                    ]
+                ),
+            },
+            {
+                "Stage": (
+                    "6. Final Model Preprocessing"
+                ),
+                "Output": final_model_text,
+            },
+        ]
+
+        st.dataframe(
+            pd.DataFrame(
+                step_rows
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown(
+            '<div class="section-title" style="margin-top:1rem;">'
+            'Before and after'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        before_col, after_col = st.columns(2)
+
+        with before_col:
+            st.text_area(
+                "Submitted text",
+                value=preprocessing_text,
+                height=145,
+                disabled=True,
+                key=(
+                    f"preprocess_original_"
+                    f"{selected_review_id}"
+                ),
+            )
+
+        with after_col:
+            st.text_area(
+                "Model-ready text",
+                value=final_model_text,
+                height=145,
+                disabled=True,
+                key=(
+                    f"preprocess_final_"
+                    f"{selected_review_id}"
+                ),
+            )
+
+        token_col, filtered_col = st.columns(2)
+
+        with token_col:
+            st.markdown(
+                "#### Tokens"
+            )
+
+            st.write(
+                steps[
+                    "Tokens"
+                ]
+            )
+
+        with filtered_col:
+            st.markdown(
+                "#### Stopword inspection"
+            )
+
+            st.write(
+                steps[
+                    "Stopword-Filtered Tokens"
+                ]
+            )
+
+        st.caption(
+            "Negation, contrast and intensifier terms are preserved in the "
+            "inspection view because they can materially change sentiment."
+        )
+
+        if len(preprocessing_df) > 1:
+            st.markdown(
+                '<div class="section-title" style="margin-top:1.2rem;">'
+                'All submitted reviews after preprocessing'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+            st.dataframe(
+                preprocessing_df,
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # ============================================================
