@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import html
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -123,6 +124,17 @@ from src.preprocessing import preprocess_text
 
 RESULTS_DIR = BASE_DIR / "outputs" / "results"
 FIGURE_DIR = BASE_DIR / "outputs" / "figures"
+MODEL_DIR = BASE_DIR / "models"
+TARGET_CONTEXT_RESULTS_DIR = (
+    BASE_DIR
+    / "outputs"
+    / "target_context_experiments"
+)
+PRIOR_EVALUATION_DIR = (
+    BASE_DIR
+    / "outputs"
+    / "final_champion_evaluation"
+)
 TRAIN_DATA_FILE = (
     BASE_DIR
     / "data"
@@ -166,6 +178,258 @@ if "results_df" not in st.session_state:
 
 
 # ============================================================
+# INPUT SEGMENTATION
+# ============================================================
+
+MAX_ANALYSIS_UNIT_CHARS = 700
+
+
+def _basic_sentence_split(text: str):
+    """
+    Lightweight sentence splitting used only to break very long blocks.
+
+    The production sentiment preprocessing remains unchanged.
+    """
+    text = re.sub(
+        r"\.{3,}\s*",
+        ". ",
+        str(text),
+    )
+
+    sentences = re.split(
+        r"(?<=[.!?])\s+(?=[A-Z#*])",
+        text,
+    )
+
+    return [
+        sentence.strip()
+        for sentence in sentences
+        if sentence.strip()
+    ]
+
+
+def _split_long_block(
+    block: str,
+    max_chars: int = MAX_ANALYSIS_UNIT_CHARS,
+):
+    """Pack sentences into manageable ABSA analysis units."""
+    block = str(block).strip()
+
+    if not block:
+        return []
+
+    if len(block) <= max_chars:
+        return [block]
+
+    sentences = _basic_sentence_split(
+        block
+    )
+
+    if len(sentences) <= 1:
+        return [
+            block[start:start + max_chars].strip()
+            for start in range(
+                0,
+                len(block),
+                max_chars,
+            )
+            if block[start:start + max_chars].strip()
+        ]
+
+    units = []
+    current = ""
+
+    for sentence in sentences:
+        candidate = (
+            f"{current} {sentence}".strip()
+            if current
+            else sentence
+        )
+
+        if (
+            current
+            and len(candidate) > max_chars
+        ):
+            units.append(
+                current
+            )
+            current = sentence
+        else:
+            current = candidate
+
+    if current:
+        units.append(
+            current
+        )
+
+    return units
+
+
+def segment_input_text(text: str):
+    """
+    Convert pasted free-form text into domain-sized analysis units.
+
+    A short ordinary review remains one unit. Long or multi-paragraph input
+    is segmented before domain detection, aspect extraction and sentiment
+    classification. This allows one submission to contain both Restaurant
+    and Laptop content without forcing one domain onto the whole document.
+    """
+    text = html.unescape(
+        str(text or "")
+    )
+
+    text = (
+        text
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\u200b", "")
+    )
+
+    # Put Markdown headings onto their own logical line, including headings
+    # pasted inline after another review.
+    text = re.sub(
+        r"\s*(#{1,6}\s+[^\n]+)",
+        r"\n\1\n",
+        text,
+    )
+
+    text = re.sub(
+        r"\s*(\*\*[^*\n]{3,120}\*\*)\s*",
+        r"\n\1\n",
+        text,
+    )
+
+    text = re.sub(
+        r"[ \t]+",
+        " ",
+        text,
+    )
+
+    blocks = [
+        block.strip()
+        for block in re.split(
+            r"\n+",
+            text,
+        )
+        if block.strip()
+    ]
+
+    # Ordinary single-review input should remain untouched.
+    if (
+        len(blocks) == 1
+        and len(blocks[0])
+        <= MAX_ANALYSIS_UNIT_CHARS
+    ):
+        return blocks
+
+    units = []
+    pending_heading = ""
+
+    for block in blocks:
+        is_markdown_heading = bool(
+            re.fullmatch(
+                r"#{1,6}\s+.+|\*\*[^*]+\*\*",
+                block,
+            )
+        )
+
+        cleaned = re.sub(
+            r"^#{1,6}\s*",
+            "",
+            block,
+        )
+
+        cleaned = (
+            cleaned
+            .replace("**", "")
+            .strip()
+        )
+
+        if not cleaned:
+            continue
+
+        # A heading is context for the paragraph that follows it.
+        if is_markdown_heading:
+            pending_heading = (
+                f"{pending_heading} {cleaned}"
+                .strip()
+            )
+            continue
+
+        if pending_heading:
+            cleaned = (
+                f"{pending_heading}. {cleaned}"
+            )
+            pending_heading = ""
+
+        units.extend(
+            _split_long_block(
+                cleaned
+            )
+        )
+
+    if pending_heading:
+        if units:
+            units[-1] = (
+                f"{units[-1]} {pending_heading}"
+                .strip()
+            )
+        else:
+            units.append(
+                pending_heading
+            )
+
+    # Remove fragments that cannot support useful text analysis.
+    useful_units = []
+
+    for unit in units:
+        word_count = len(
+            re.findall(
+                r"[A-Za-z]+",
+                unit,
+            )
+        )
+
+        if word_count >= 3:
+            useful_units.append(
+                unit.strip()
+            )
+
+    return (
+        useful_units
+        if useful_units
+        else [
+            text.strip()
+        ]
+    )
+
+
+def expand_analysis_records(values):
+    """
+    Preserve normal review rows while segmenting unusually long/mixed rows.
+    """
+    records = []
+
+    for value in values:
+        if pd.isna(value):
+            continue
+
+        value = str(value).strip()
+
+        if not value:
+            continue
+
+        records.extend(
+            segment_input_text(
+                value
+            )
+        )
+
+    return records
+
+
+
+# ============================================================
 # FILE HELPERS
 # ============================================================
 
@@ -183,18 +447,9 @@ TEXT_COLUMN_CANDIDATES = [
 
 
 def clean_reviews(values):
-    reviews = []
-
-    for value in values:
-        if pd.isna(value):
-            continue
-
-        text = str(value).strip()
-
-        if text:
-            reviews.append(text)
-
-    return reviews
+    return expand_analysis_records(
+        values
+    )
 
 
 def detect_csv_text_column(df):
@@ -256,11 +511,9 @@ def read_uploaded_file(uploaded_file):
         )
 
         return (
-            [
-                line.strip()
-                for line in content.splitlines()
-                if line.strip()
-            ],
+            segment_input_text(
+                content
+            ),
             "TXT",
             None,
         )
@@ -297,7 +550,13 @@ def read_uploaded_file(uploaded_file):
                 if element.text and element.text.strip()
             ]
 
-        return texts, "XML", None
+        return (
+            expand_analysis_records(
+                texts
+            ),
+            "XML",
+            None,
+        )
 
     raise ValueError(
         "Unsupported file type. Use TXT, CSV, or XML."
@@ -345,13 +604,13 @@ def instructional_preprocessing_steps(text):
     )
 
     no_urls = re.sub(
-        r"https?://\\S+|www\\.\\S+",
+        r"https?://\S+|www\.\S+",
         " ",
         no_html,
     )
 
     normalized = re.sub(
-        r"\\s+",
+        r"\s+",
         " ",
         no_urls,
     ).strip()
@@ -591,6 +850,12 @@ def analyse_reviews(reviews):
 
     total = len(reviews)
 
+    if total > 1:
+        st.caption(
+            f"Input was analyzed as {total} text units so that different "
+            "domains can be identified independently."
+        )
+
     progress = st.progress(
         0,
         text="AspectIQ is analyzing your reviews..."
@@ -729,15 +994,27 @@ def detected_domain(analyses):
     if not analyses:
         return "—"
 
-    domains = [
-        item["domain"]["domain"]
-        for item in analyses
-    ]
+    domains = sorted(
+        {
+            item["domain"]["domain"]
+            for item in analyses
+            if item["domain"]["domain"]
+            not in {
+                "",
+                "Unknown",
+            }
+        }
+    )
 
-    if len(set(domains)) == 1:
+    if not domains:
+        return "Unknown"
+
+    if len(domains) == 1:
         return domains[0]
 
-    return "Mixed"
+    return " + ".join(
+        domains
+    )
 
 
 def render_kpis(
@@ -748,7 +1025,7 @@ def render_kpis(
         (
             "🧾",
             "i-blue",
-            "Reviews Analyzed",
+            "Text Units Analyzed",
             len(analyses),
         ),
         (
@@ -1018,40 +1295,73 @@ def render_results(
         unsafe_allow_html=True,
     )
 
-    aspect_results = [
-        result
-        for analysis in analyses
-        for result in analysis[
-            "sentiments"
-        ]
-    ]
+    domain_results = {}
 
-    if not aspect_results:
+    for analysis in analyses:
+        domain_name = analysis[
+            "domain"
+        ][
+            "domain"
+        ]
+
+        domain_results.setdefault(
+            domain_name,
+            [],
+        )
+
+        domain_results[
+            domain_name
+        ].extend(
+            analysis[
+                "sentiments"
+            ]
+        )
+
+    aspect_count = sum(
+        len(items)
+        for items in domain_results.values()
+    )
+
+    if aspect_count == 0:
         st.warning(
             "No explicit aspect terms were detected."
         )
         return
 
-    for start in range(
-        0,
-        len(aspect_results),
-        2,
+    for domain_name in sorted(
+        domain_results
     ):
-        row_items = aspect_results[
-            start:
-            start + 2
+        aspect_results = domain_results[
+            domain_name
         ]
 
-        cols = st.columns(2)
+        if not aspect_results:
+            continue
 
-        for col, result in zip(
-            cols,
-            row_items,
+        st.markdown(
+            f"### {domain_name} domain"
+        )
+
+        for start in range(
+            0,
+            len(aspect_results),
+            2,
         ):
-            with col:
-                render_aspect_card(
-                    result
-                )
+            row_items = aspect_results[
+                start:
+                start + 2
+            ]
+
+            cols = st.columns(2)
+
+            for col, result in zip(
+                cols,
+                row_items,
+            ):
+                with col:
+                    render_aspect_card(
+                        result
+                    )
 
     st.markdown(
         "<div style='height:.75rem'></div>",
@@ -1061,6 +1371,166 @@ def render_results(
     render_charts(
         results_df
     )
+
+
+
+# ============================================================
+# REUSABLE REVIEW INPUT COMPONENT
+# ============================================================
+
+INPUT_WARNING = (
+    "Please enter review or upload a review file first!"
+)
+
+
+def render_review_input(
+    key_prefix: str,
+    *,
+    text_label: str = "Customer review",
+    text_button_label: str = "Analyze Text",
+    file_button_label: str = "Analyze Uploaded Reviews",
+    text_height: int = 125,
+    show_file_preview: bool = True,
+):
+    """
+    Render the shared text/file analysis interface.
+
+    This component is used by both Overview and Analyze so that
+    input handling, file parsing, validation and analysis execution
+    remain consistent across the application.
+    """
+    text_tab, file_tab = st.tabs(
+        [
+            "Analyze Text",
+            "Upload Review File",
+        ]
+    )
+
+    # --------------------------------------------------------
+    # TEXT INPUT
+    # --------------------------------------------------------
+    with text_tab:
+        review_text = st.text_area(
+            text_label,
+            value="",
+            height=text_height,
+            placeholder="Enter reviews here",
+            key=f"{key_prefix}_text",
+        )
+
+        button_col, warning_col = st.columns(
+            [1.25, 4.75]
+        )
+
+        with button_col:
+            text_clicked = st.button(
+                text_button_label,
+                type="primary",
+                key=f"{key_prefix}_run_text",
+                use_container_width=True,
+            )
+
+        with warning_col:
+            if text_clicked:
+                if not review_text.strip():
+                    st.warning(
+                        INPUT_WARNING
+                    )
+                else:
+                    analyse_reviews(
+                        segment_input_text(
+                            review_text
+                        )
+                    )
+                    st.rerun()
+
+    # --------------------------------------------------------
+    # FILE INPUT
+    # --------------------------------------------------------
+    with file_tab:
+        uploaded_file = st.file_uploader(
+            "Upload TXT, CSV or XML",
+            type=[
+                "txt",
+                "csv",
+                "xml",
+            ],
+            key=f"{key_prefix}_file",
+        )
+
+        reviews = []
+        file_ready = False
+
+        if uploaded_file is not None:
+            try:
+                (
+                    reviews,
+                    file_type,
+                    text_column,
+                ) = read_uploaded_file(
+                    uploaded_file
+                )
+
+                st.success(
+                    f"Loaded {len(reviews):,} "
+                    f"review(s) from {file_type}."
+                )
+
+                if text_column:
+                    st.caption(
+                        f"Detected review column: "
+                        f"`{text_column}`"
+                    )
+
+                if reviews:
+                    file_ready = True
+
+                    if show_file_preview:
+                        st.dataframe(
+                            pd.DataFrame(
+                                {
+                                    "Review":
+                                        reviews[:10]
+                                }
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+            except Exception as exc:
+                st.error(
+                    "Could not process the uploaded file."
+                )
+                st.exception(
+                    exc
+                )
+
+        button_col, warning_col = st.columns(
+            [1.45, 4.55]
+        )
+
+        with button_col:
+            file_clicked = st.button(
+                file_button_label,
+                type="primary",
+                key=f"{key_prefix}_run_file",
+                use_container_width=True,
+            )
+
+        with warning_col:
+            if file_clicked:
+                if (
+                    uploaded_file is None
+                    or not file_ready
+                ):
+                    st.warning(
+                        INPUT_WARNING
+                    )
+                else:
+                    analyse_reviews(
+                        reviews
+                    )
+                    st.rerun()
 
 
 # ============================================================
@@ -1155,44 +1625,18 @@ if st.session_state.page == "Overview":
     ):
         st.markdown(
             '<div class="section-kicker">Quick Analysis</div>'
-            '<div class="section-title">Paste customer review</div>',
+            '<div class="section-title">Text or review file</div>',
             unsafe_allow_html=True,
         )
 
-        quick_text = st.text_area(
-            "Review text",
-            value=(
-                "The screen is beautiful but "
-                "the battery life is disappointing."
-            ),
-            height=108,
-            label_visibility="collapsed",
-            key="overview_text",
+        render_review_input(
+            "overview",
+            text_label="Review text",
+            text_button_label="Analyze Review  →",
+            file_button_label="Analyze Uploaded Reviews",
+            text_height=108,
+            show_file_preview=True,
         )
-
-        button_col, caption_col = st.columns(
-            [1.05, 4.7]
-        )
-
-        with button_col:
-            if st.button(
-                "Analyze Review  →",
-                type="primary",
-                key="overview_run",
-                use_container_width=True,
-            ):
-                if quick_text.strip():
-                    analyse_reviews(
-                        [
-                            quick_text.strip()
-                        ]
-                    )
-
-        with caption_col:
-            st.caption(
-                "AspectIQ automatically determines the domain, "
-                "detects explicit aspects, and classifies their sentiment."
-            )
 
     if st.session_state.analyses:
 
@@ -1206,7 +1650,7 @@ if st.session_state.page == "Overview":
             (
                 "🧾",
                 "i-blue",
-                "Reviews Analyzed",
+                "Text Units Analyzed",
                 "—",
             ),
             (
@@ -1301,68 +1745,14 @@ elif st.session_state.page == "Analyze":
             "Run another analysis",
             expanded=False,
         ):
-            text_tab, file_tab = st.tabs(
-                [
-                    "Analyze Text",
-                    "Upload Review File",
-                ]
+            render_review_input(
+                "analyze_after_results",
+                text_label="Customer review",
+                text_button_label="Analyze New Text",
+                file_button_label="Analyze Uploaded Reviews",
+                text_height=125,
+                show_file_preview=False,
             )
-
-            with text_tab:
-                text = st.text_area(
-                    "Customer review",
-                    value="",
-                    height=125,
-                    key="analyze_text_after_results",
-                    placeholder=(
-                        "Enter another laptop or restaurant review..."
-                    ),
-                )
-
-                if st.button(
-                    "Analyze New Text",
-                    type="primary",
-                    key="run_text_after_results",
-                ):
-                    if text.strip():
-                        analyse_reviews([text.strip()])
-                        st.rerun()
-
-            with file_tab:
-                uploaded_file = st.file_uploader(
-                    "Upload TXT, CSV or XML",
-                    type=["txt", "csv", "xml"],
-                    key="file_after_results",
-                )
-
-                if uploaded_file is not None:
-                    try:
-                        reviews, file_type, text_column = read_uploaded_file(
-                            uploaded_file
-                        )
-
-                        st.success(
-                            f"Loaded {len(reviews):,} review(s) from {file_type}."
-                        )
-
-                        if text_column:
-                            st.caption(
-                                f"Detected review column: `{text_column}`"
-                            )
-
-                        if reviews and st.button(
-                            "Analyze Uploaded Reviews",
-                            type="primary",
-                            key="run_file_after_results",
-                        ):
-                            analyse_reviews(reviews)
-                            st.rerun()
-
-                    except Exception as exc:
-                        st.error(
-                            "Could not process the uploaded file."
-                        )
-                        st.exception(exc)
 
     # --------------------------------------------------------
     # Initial state: show the analysis form prominently.
@@ -1379,90 +1769,14 @@ elif st.session_state.page == "Analyze":
                 unsafe_allow_html=True,
             )
 
-            text_tab, file_tab = st.tabs(
-                [
-                    "Analyze Text",
-                    "Upload Review File",
-                ]
+            render_review_input(
+                "analyze_initial",
+                text_label="Customer review",
+                text_button_label="Analyze Text",
+                file_button_label="Analyze Uploaded Reviews",
+                text_height=125,
+                show_file_preview=True,
             )
-
-            with text_tab:
-                text = st.text_area(
-                    "Customer review",
-                    value=(
-                        "The food was excellent but "
-                        "the service was painfully slow."
-                    ),
-                    height=125,
-                    key="analyze_text",
-                )
-
-                if st.button(
-                    "Analyze Text",
-                    type="primary",
-                    key="run_text",
-                ):
-                    if text.strip():
-                        analyse_reviews(
-                            [text.strip()]
-                        )
-                        st.rerun()
-
-            with file_tab:
-                uploaded_file = st.file_uploader(
-                    "Upload TXT, CSV or XML",
-                    type=[
-                        "txt",
-                        "csv",
-                        "xml",
-                    ],
-                    key="initial_file_upload",
-                )
-
-                if uploaded_file is not None:
-                    try:
-                        reviews, file_type, text_column = (
-                            read_uploaded_file(
-                                uploaded_file
-                            )
-                        )
-
-                        st.success(
-                            f"Loaded {len(reviews):,} review(s) from {file_type}."
-                        )
-
-                        if text_column:
-                            st.caption(
-                                f"Detected review column: `{text_column}`"
-                            )
-
-                        if reviews:
-                            st.dataframe(
-                                pd.DataFrame(
-                                    {
-                                        "Review":
-                                            reviews[:10]
-                                    }
-                                ),
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-
-                            if st.button(
-                                "Analyze Uploaded Reviews",
-                                type="primary",
-                                key="run_file",
-                            ):
-                                analyse_reviews(
-                                    reviews
-                                )
-                                st.rerun()
-
-                    except Exception as exc:
-                        st.error(
-                            "Could not process the uploaded file."
-                        )
-                        st.exception(exc)
 
 
 # ============================================================
@@ -2176,167 +2490,443 @@ elif st.session_state.page == "Model Lab":
 
     st.markdown(
         '<div class="section-kicker">Model Lab</div>'
-        '<div class="section-title">Model evaluation and experiments</div>',
+        '<div class="section-title">Final model evaluation and representation experiments</div>',
         unsafe_allow_html=True,
     )
 
-    best_model_file = (
-        RESULTS_DIR
-        / "best_3_class_model.json"
+    # --------------------------------------------------------
+    # FINAL PRODUCTION MODEL
+    # --------------------------------------------------------
+    production_model_file = (
+        MODEL_DIR
+        / "best_target_clause_local_3class.json"
     )
 
-    if best_model_file.exists():
+    production_model = {
+        "task": "3-class",
+        "model": "SVM",
+        "kernel": "rbf",
+        "C": 1.0,
+        "gamma": "scale",
+        "class_weight": "balanced",
+        "representation": "Target Clause + Local Context GloVe",
+        "dimensions": 200,
+        "context_window": 5,
+        "contrast_aware": True,
+        "distance_weighted_local_context": True,
+        "selection_evidence": {
+            "grouped_cv_accuracy": 0.679165,
+            "grouped_cv_macro_f1": 0.630693,
+            "grouped_cv_macro_roc_auc_ovr": 0.816772,
+            "selection_basis": (
+                "Highest grouped 5-fold training-only Macro F1 "
+                "among tested target-context representations."
+            ),
+        },
+    }
 
-        with open(
-            best_model_file,
-            "r",
-            encoding="utf-8",
-        ) as file:
-            best_model = json.load(
-                file
+    if production_model_file.exists():
+        try:
+            with open(
+                production_model_file,
+                "r",
+                encoding="utf-8",
+            ) as file:
+                production_model.update(
+                    json.load(file)
+                )
+        except Exception as exc:
+            st.warning(
+                "Production model metadata could not be read. "
+                "AspectIQ is showing the frozen development metadata instead."
+            )
+            st.caption(str(exc))
+
+    selection_evidence = production_model.get(
+        "selection_evidence",
+        {},
+    )
+
+    grouped_accuracy = float(
+        selection_evidence.get(
+            "grouped_cv_accuracy",
+            0.679165,
+        )
+    )
+
+    grouped_macro_f1 = float(
+        selection_evidence.get(
+            "grouped_cv_macro_f1",
+            0.630693,
+        )
+    )
+
+    grouped_auc = float(
+        selection_evidence.get(
+            "grouped_cv_macro_roc_auc_ovr",
+            0.816772,
+        )
+    )
+
+    feature_dimensions = int(
+        production_model.get(
+            "dimensions",
+            200,
+        )
+    )
+
+    metrics = [
+        (
+            "🎯",
+            "i-blue",
+            "Grouped CV Accuracy",
+            f"{grouped_accuracy * 100:.2f}%",
+        ),
+        (
+            "📐",
+            "i-purple",
+            "Grouped CV Macro F1",
+            f"{grouped_macro_f1:.3f}",
+        ),
+        (
+            "📈",
+            "i-teal",
+            "Grouped CV ROC-AUC",
+            f"{grouped_auc:.3f}",
+        ),
+        (
+            "🧠",
+            "i-orange",
+            "Feature Dimensions",
+            feature_dimensions,
+        ),
+    ]
+
+    cols = st.columns(4)
+
+    for col, item in zip(
+        cols,
+        metrics,
+    ):
+        with col:
+            st.markdown(
+                kpi_html(*item),
+                unsafe_allow_html=True,
             )
 
-        metrics = [
-            (
-                "🎯",
-                "i-blue",
-                "Test Accuracy",
-                f"{best_model['test_accuracy'] * 100:.2f}%",
-            ),
-            (
-                "📐",
-                "i-purple",
-                "Macro F1",
-                f"{best_model['test_macro_f1']:.3f}",
-            ),
-            (
-                "📈",
-                "i-teal",
-                "Macro ROC-AUC",
-                f"{best_model['test_macro_roc_auc']:.3f}",
-            ),
-            (
-                "🧠",
-                "i-orange",
-                "Feature Dimensions",
-                best_model[
-                    "dimensions"
-                ],
-            ),
-        ]
+    st.caption(
+        "These are training-only grouped 5-fold cross-validation metrics "
+        "used to select the final production representation. They are not "
+        "presented as a new independent official-test result."
+    )
 
-        cols = st.columns(4)
-
-        for col, item in zip(
-            cols,
-            metrics,
-        ):
-            with col:
-                st.markdown(
-                    kpi_html(*item),
-                    unsafe_allow_html=True,
-                )
-
-        st.markdown(
-            f"""
+    st.markdown(
+        f"""
 <div class="panel-shell" style="margin-top:1rem;">
-    <div class="panel-title">Selected Final Model</div>
-    <div style="line-height:1.8;color:#4D5970;">
-        <b>Model:</b> {best_model['model']}<br>
-        <b>Representation:</b> {best_model['representation']}<br>
-        <b>Class weighting:</b> {best_model['class_weight']}<br>
-        <b>Selection metric:</b> {best_model['selection_metric']}
+    <div class="panel-title">Selected Production Model</div>
+    <div style="line-height:1.85;color:#4D5970;">
+        <b>Task:</b> 3-class aspect sentiment classification<br>
+        <b>Classifier:</b> {html.escape(str(production_model.get("model", "SVM")))}
+        ({html.escape(str(production_model.get("kernel", "rbf")).upper())} kernel)<br>
+        <b>Representation:</b> {html.escape(str(production_model.get("representation", "Target Clause + Local Context GloVe")))}<br>
+        <b>Dimensions:</b> {feature_dimensions}<br>
+        <b>Context window:</b> {int(production_model.get("context_window", 5))}<br>
+        <b>Class weighting:</b> {html.escape(str(production_model.get("class_weight", "balanced")))}<br>
+        <b>Hyperparameters:</b> C={production_model.get("C", 1.0)},
+        gamma={html.escape(str(production_model.get("gamma", "scale")))}<br>
+        <b>Selection metric:</b> Grouped 5-fold CV Macro F1
     </div>
 </div>
 """,
-            unsafe_allow_html=True,
-        )
-
-    comparison_file = (
-        RESULTS_DIR
-        / "controlled_experiment_results.csv"
+        unsafe_allow_html=True,
     )
 
-    if comparison_file.exists():
+    # --------------------------------------------------------
+    # REPRESENTATION EXPERIMENT
+    # --------------------------------------------------------
+    representation_file = (
+        TARGET_CONTEXT_RESULTS_DIR
+        / "representation_comparison.csv"
+    )
 
-        comparison_df = pd.read_csv(
-            comparison_file
-        )
-
-        st.markdown(
-            '<div class="section-title" style="margin-top:1.25rem;">'
-            'Controlled Experiment Comparison'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-
-        st.dataframe(
-            comparison_df.sort_values(
-                [
-                    "task",
-                    "cv_macro_f1_mean",
-                ],
-                ascending=[
-                    True,
-                    False,
-                ],
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        three_class = (
-            comparison_df[
-                comparison_df["task"]
-                == "3-class"
-            ]
-            .copy()
-        )
-
-        figure = px.bar(
-            three_class,
-            x="model",
-            y="f1_macro",
-            color="representation",
-            barmode="group",
-            text_auto=".3f",
-            title="Three-Class Test Macro F1",
-        )
-
-        figure.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-
-        st.plotly_chart(
-            figure,
-            use_container_width=True,
-            config={
-                "displayModeBar": False
+    fallback_representation_results = pd.DataFrame(
+        [
+            {
+                "representation": "Target Clause+Local 200d",
+                "dimensions": 200,
+                "accuracy_oof": 0.679165,
+                "f1_macro_oof": 0.630693,
+                "roc_auc_macro_ovr_oof": 0.816772,
             },
+            {
+                "representation": "Target Clause+Aspect 200d",
+                "dimensions": 200,
+                "accuracy_oof": 0.674542,
+                "f1_macro_oof": 0.627110,
+                "roc_auc_macro_ovr_oof": 0.813642,
+            },
+            {
+                "representation": "Target Clause+Aspect+Local 300d",
+                "dimensions": 300,
+                "accuracy_oof": 0.672830,
+                "f1_macro_oof": 0.626107,
+                "roc_auc_macro_ovr_oof": 0.816958,
+            },
+            {
+                "representation": "Current Full+Aspect+Local 300d",
+                "dimensions": 300,
+                "accuracy_oof": 0.670604,
+                "f1_macro_oof": 0.623990,
+                "roc_auc_macro_ovr_oof": 0.816268,
+            },
+            {
+                "representation": "Local Context Only 100d",
+                "dimensions": 100,
+                "accuracy_oof": 0.620271,
+                "f1_macro_oof": 0.578604,
+                "roc_auc_macro_ovr_oof": 0.775565,
+            },
+            {
+                "representation": "Aspect+Local 200d",
+                "dimensions": 200,
+                "accuracy_oof": 0.614621,
+                "f1_macro_oof": 0.575528,
+                "roc_auc_macro_ovr_oof": 0.770744,
+            },
+        ]
+    )
+
+    if representation_file.exists():
+        try:
+            representation_df = pd.read_csv(
+                representation_file
+            )
+        except Exception:
+            representation_df = (
+                fallback_representation_results.copy()
+            )
+    else:
+        representation_df = (
+            fallback_representation_results.copy()
         )
 
-    confusion_file = (
-        FIGURE_DIR
-        / (
-            "cm_3_class_logistic_regression_"
-            "enhanced_300d.png"
+    required_representation_columns = {
+        "representation",
+        "dimensions",
+        "accuracy_oof",
+        "f1_macro_oof",
+        "roc_auc_macro_ovr_oof",
+    }
+
+    if not required_representation_columns.issubset(
+        representation_df.columns
+    ):
+        representation_df = (
+            fallback_representation_results.copy()
+        )
+
+    representation_df = (
+        representation_df
+        .sort_values(
+            "f1_macro_oof",
+            ascending=False,
+        )
+        .reset_index(
+            drop=True
         )
     )
 
-    if confusion_file.exists():
-
-        st.markdown(
-            '<div class="section-title">Final Model Confusion Matrix</div>',
-            unsafe_allow_html=True,
+    display_representation_df = (
+        representation_df[
+            [
+                "representation",
+                "dimensions",
+                "accuracy_oof",
+                "f1_macro_oof",
+                "roc_auc_macro_ovr_oof",
+            ]
+        ]
+        .rename(
+            columns={
+                "representation": "Representation",
+                "dimensions": "Dimensions",
+                "accuracy_oof": "Grouped CV Accuracy",
+                "f1_macro_oof": "Grouped CV Macro F1",
+                "roc_auc_macro_ovr_oof": "Grouped CV ROC-AUC",
+            }
         )
+    )
 
-        st.image(
-            str(
-                confusion_file
+    st.markdown(
+        '<div class="section-title" style="margin-top:1.25rem;">'
+        'Training-Only Representation Comparison'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.dataframe(
+        display_representation_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Grouped CV Accuracy": st.column_config.NumberColumn(
+                format="%.3f"
             ),
-            use_container_width=True,
+            "Grouped CV Macro F1": st.column_config.NumberColumn(
+                format="%.3f"
+            ),
+            "Grouped CV ROC-AUC": st.column_config.NumberColumn(
+                format="%.3f"
+            ),
+        },
+    )
+
+    representation_figure = px.bar(
+        representation_df.sort_values(
+            "f1_macro_oof",
+            ascending=True,
+        ),
+        x="f1_macro_oof",
+        y="representation",
+        orientation="h",
+        text_auto=".3f",
+        title="Grouped 5-Fold CV Macro F1 by GloVe Representation",
+        labels={
+            "f1_macro_oof": "Macro F1",
+            "representation": "Representation",
+        },
+    )
+
+    representation_figure.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        yaxis_title=None,
+        xaxis_title="Grouped CV Macro F1",
+    )
+
+    st.plotly_chart(
+        representation_figure,
+        use_container_width=True,
+        config={
+            "displayModeBar": False
+        },
+    )
+
+    st.markdown(
+        """
+<div class="panel-shell" style="margin-top:1rem;">
+    <div class="panel-title">Development Conclusion</div>
+    <p style="color:#4D5970;line-height:1.75;margin-bottom:0;">
+        The Target Clause + Local Context representation achieved the highest
+        grouped cross-validation Macro F1 while reducing the sentiment feature
+        space from 300 to 200 dimensions. The design removes the global
+        full-sentence vector that was found to allow sentiment from a different
+        aspect clause to influence the target aspect. It also avoids a standalone
+        aspect vector, which did not improve grouped-CV performance.
+    </p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # --------------------------------------------------------
+    # HISTORICAL INDEPENDENT BENCHMARK
+    # --------------------------------------------------------
+    prior_metrics = {
+        "accuracy": 0.7031,
+        "precision_macro": 0.6219,
+        "recall_macro": 0.6437,
+        "f1_macro": 0.6275,
+        "roc_auc_macro_ovr": 0.8345,
+    }
+
+    prior_metrics_file = (
+        PRIOR_EVALUATION_DIR
+        / "official_test_metrics.json"
+    )
+
+    if prior_metrics_file.exists():
+        try:
+            with open(
+                prior_metrics_file,
+                "r",
+                encoding="utf-8",
+            ) as file:
+                prior_metrics.update(
+                    json.load(file)
+                )
+        except Exception:
+            pass
+
+    with st.expander(
+        "Earlier independent-test benchmark — historical 300d model",
+        expanded=False,
+    ):
+        st.caption(
+            "This benchmark belongs to the earlier Contrast-Aware Enhanced "
+            "GloVe 300d SVM. It is retained for research transparency and "
+            "must not be interpreted as the independent-test score of the "
+            "current 200d production representation."
         )
+
+        historical_cols = st.columns(5)
+
+        historical_values = [
+            (
+                "Accuracy",
+                prior_metrics.get(
+                    "accuracy",
+                    0.7031,
+                ),
+            ),
+            (
+                "Precision",
+                prior_metrics.get(
+                    "precision_macro",
+                    0.6219,
+                ),
+            ),
+            (
+                "Recall",
+                prior_metrics.get(
+                    "recall_macro",
+                    0.6437,
+                ),
+            ),
+            (
+                "Macro F1",
+                prior_metrics.get(
+                    "f1_macro",
+                    0.6275,
+                ),
+            ),
+            (
+                "ROC-AUC",
+                prior_metrics.get(
+                    "roc_auc_macro_ovr",
+                    0.8345,
+                ),
+            ),
+        ]
+
+        for col, (
+            label,
+            value,
+        ) in zip(
+            historical_cols,
+            historical_values,
+        ):
+            with col:
+                if label == "Accuracy":
+                    st.metric(
+                        label,
+                        f"{float(value) * 100:.2f}%",
+                    )
+                else:
+                    st.metric(
+                        label,
+                        f"{float(value):.3f}",
+                    )
 
 
 # ============================================================
@@ -2357,7 +2947,7 @@ else:
     <div class="panel-title">Automatic ABSA Pipeline</div>
     <div style="
         display:grid;
-        grid-template-columns:repeat(5,1fr);
+        grid-template-columns:repeat(5,minmax(0,1fr));
         gap:.75rem;
         margin-top:1rem;">
         <div class="kpi-card" style="text-align:center;">
@@ -2377,12 +2967,12 @@ else:
         </div>
         <div class="kpi-card" style="text-align:center;">
             <div style="font-size:1.55rem;">🧠</div>
-            <b>300d GloVe</b>
-            <div class="kpi-label">Sentence + aspect + context</div>
+            <b>200d Target Context</b>
+            <div class="kpi-label">Target clause + weighted local context</div>
         </div>
         <div class="kpi-card" style="text-align:center;">
             <div style="font-size:1.55rem;">😊</div>
-            <b>Sentiment</b>
+            <b>SVM Sentiment</b>
             <div class="kpi-label">Positive, Negative, Neutral</div>
         </div>
     </div>
@@ -2396,11 +2986,67 @@ else:
 <div class="panel-shell" style="margin-top:1rem;">
     <div class="panel-title">Final Sentiment Model</div>
     <p style="color:#4D5970;line-height:1.75;">
-        AspectIQ uses a 300-dimensional aspect-aware GloVe representation:
-        100 dimensions for the full sentence, 100 dimensions for the target
-        aspect, and 100 dimensions for its local context. Logistic Regression
-        was selected as the final three-class sentiment classifier using
-        training cross-validation Macro F1.
+        AspectIQ uses a 200-dimensional target-context GloVe representation.
+        The first 100 dimensions represent the contrast-delimited clause
+        containing the target aspect. The second 100 dimensions represent a
+        distance-weighted local context around that aspect within the same
+        clause. Sentiment is classified with a balanced RBF Support Vector
+        Machine using C=1.0 and gamma='scale'.
+    </p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+<div class="panel-shell" style="margin-top:1rem;">
+    <div class="panel-title">Why Target-Context Representation?</div>
+    <p style="color:#4D5970;line-height:1.75;">
+        Aspect-based sentiment analysis must distinguish opinions expressed
+        about different targets in the same sentence. For example, in
+        <em>"The screen is beautiful but the battery life is disappointing"</em>,
+        the sentiment for <em>screen</em> is positive while the sentiment for
+        <em>battery life</em> is negative. The target-clause boundary prevents
+        the positive screen clause from entering the battery-life
+        representation. The weighted local-context vector then emphasizes
+        words nearest to the target aspect.
+    </p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+<div class="panel-shell" style="margin-top:1rem;">
+    <div class="panel-title">Model Selection</div>
+    <p style="color:#4D5970;line-height:1.75;">
+        Alternative GloVe representations were compared using grouped
+        five-fold cross-validation on the three-class training corpus.
+        Target Clause + Local Context (200d) produced the highest grouped-CV
+        Macro F1 (0.631) and accuracy (67.92%), compared with Macro F1 0.624
+        and accuracy 67.06% for the earlier Full Sentence + Aspect + Local
+        Context (300d) representation. The final classifier was therefore
+        retrained on all 5,841 eligible three-class training observations.
+    </p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+<div class="panel-shell" style="margin-top:1rem;">
+    <div class="panel-title">Evaluation Interpretation</div>
+    <p style="color:#4D5970;line-height:1.75;">
+        The current 200d production representation was selected using
+        training-only grouped cross-validation. An earlier 300d SVM had
+        already been evaluated on the official SemEval test set; its
+        independent-test scores are therefore retained only as a historical
+        benchmark. This separation avoids presenting those earlier test
+        results as if they belonged to the newly selected 200d production
+        model.
     </p>
 </div>
 """,
@@ -2416,7 +3062,10 @@ else:
         aspect terms automatically using the SemEval training aspect lexicon
         with a noun-phrase fallback, and infers the review domain using aspect
         evidence together with domain-specific vocabulary learned from the
-        Laptop and Restaurant training corpora.
+        Laptop and Restaurant training corpora. These auxiliary detectors
+        support routing and aspect discovery; the reported sentiment-model
+        metrics apply to the SVM sentiment classifier rather than to these
+        front-end heuristics.
     </p>
 </div>
 """,

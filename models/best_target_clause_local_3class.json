@@ -1,0 +1,28 @@
+{
+  "task": "3-class",
+  "model": "SVM",
+  "kernel": "rbf",
+  "C": 1.0,
+  "gamma": "scale",
+  "class_weight": "balanced",
+  "representation": "Target Clause + Local Context GloVe",
+  "dimensions": 200,
+  "context_window": 5,
+  "contrast_aware": true,
+  "distance_weighted_local_context": true,
+  "glove_model": "glove-wiki-gigaword-100",
+  "training_samples": 5841,
+  "training_label_counts": {
+    "positive": 3121,
+    "negative": 1633,
+    "neutral": 1087
+  },
+  "selection_evidence": {
+    "grouped_cv_accuracy": 0.679165,
+    "grouped_cv_macro_f1": 0.630693,
+    "grouped_cv_macro_roc_auc_ovr": 0.816772,
+    "selection_basis": "Highest grouped 5-fold training-only Macro F1 among tested target-context representations."
+  },
+  "official_test_note": "The official test set was previously used for the earlier 300d champion. This 200d production representation was selected using training-only grouped cross-validation.",
+  "model_file": "models\\best_target_clause_local_3class.joblib"
+}
