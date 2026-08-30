@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections import Counter
 import html
 import json
 import re
@@ -129,6 +130,11 @@ TARGET_CONTEXT_RESULTS_DIR = (
     BASE_DIR
     / "outputs"
     / "target_context_experiments"
+)
+FINAL_MODEL_COMPARISON_DIR = (
+    BASE_DIR
+    / "outputs"
+    / "final_model_comparison"
 )
 PRIOR_EVALUATION_DIR = (
     BASE_DIR
@@ -584,6 +590,375 @@ def first_existing_column(df, candidates):
             return column
 
     return None
+
+
+def prepare_training_eda_data(
+    training_df: pd.DataFrame,
+):
+    """
+    Prepare transparent EDA views from the processed SemEval training corpus.
+
+    The returned modelling frame mirrors the later modelling policy by
+    excluding blank rows, exact text/aspect/label duplicates, and the rare
+    conflict/mixed class from the operational three-class view.
+    """
+    if training_df.empty:
+        return {
+            "all": pd.DataFrame(),
+            "model": pd.DataFrame(),
+            "sentences": pd.DataFrame(),
+            "columns": {},
+            "removed_duplicates": 0,
+            "removed_conflict": 0,
+        }
+
+    text_column = first_existing_column(
+        training_df,
+        [
+            "text",
+            "review_text",
+            "review",
+            "sentence",
+            "content",
+        ],
+    )
+
+    aspect_column = first_existing_column(
+        training_df,
+        [
+            "aspect",
+            "aspect_term",
+            "target",
+            "category",
+        ],
+    )
+
+    sentiment_column = first_existing_column(
+        training_df,
+        [
+            "sentiment",
+            "polarity",
+            "label",
+            "class",
+        ],
+    )
+
+    domain_column = first_existing_column(
+        training_df,
+        [
+            "domain",
+            "dataset",
+            "source",
+        ],
+    )
+
+    sentence_id_column = first_existing_column(
+        training_df,
+        [
+            "sentence_id",
+            "review_id",
+            "text_id",
+            "id",
+        ],
+    )
+
+    preprocessed_column = first_existing_column(
+        training_df,
+        [
+            "preprocessed_text",
+            "model_ready_text",
+            "clean_text",
+            "processed_text",
+        ],
+    )
+
+    if text_column is None:
+        return {
+            "all": pd.DataFrame(),
+            "model": pd.DataFrame(),
+            "sentences": pd.DataFrame(),
+            "columns": {},
+            "removed_duplicates": 0,
+            "removed_conflict": 0,
+        }
+
+    eda_df = training_df.copy()
+
+    required = [
+        text_column,
+    ]
+
+    if aspect_column:
+        required.append(
+            aspect_column
+        )
+
+    if sentiment_column:
+        required.append(
+            sentiment_column
+        )
+
+    eda_df = eda_df.dropna(
+        subset=required
+    ).copy()
+
+    for column in required:
+        eda_df[
+            column
+        ] = (
+            eda_df[
+                column
+            ]
+            .astype(str)
+            .str.strip()
+        )
+
+    for column in [
+        domain_column,
+        preprocessed_column,
+    ]:
+        if column:
+            eda_df[
+                column
+            ] = (
+                eda_df[
+                    column
+                ]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+    eda_df = eda_df[
+        eda_df[
+            text_column
+        ].ne("")
+    ].copy()
+
+    if aspect_column:
+        eda_df = eda_df[
+            eda_df[
+                aspect_column
+            ].ne("")
+        ].copy()
+
+    if sentiment_column:
+        eda_df = eda_df[
+            eda_df[
+                sentiment_column
+            ].ne("")
+        ].copy()
+
+    duplicate_subset = [
+        text_column,
+    ]
+
+    if aspect_column:
+        duplicate_subset.append(
+            aspect_column
+        )
+
+    if sentiment_column:
+        duplicate_subset.append(
+            sentiment_column
+        )
+
+    before_duplicates = len(
+        eda_df
+    )
+
+    eda_df = (
+        eda_df
+        .drop_duplicates(
+            subset=duplicate_subset,
+            keep="first",
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    removed_duplicates = (
+        before_duplicates
+        - len(
+            eda_df
+        )
+    )
+
+    model_df = eda_df.copy()
+    removed_conflict = 0
+
+    if sentiment_column:
+        normalized_labels = (
+            model_df[
+                sentiment_column
+            ]
+            .astype(str)
+            .str.strip()
+            .str.casefold()
+        )
+
+        conflict_mask = normalized_labels.isin(
+            {
+                "conflict",
+                "mixed",
+                "both",
+                "positive-negative",
+                "positive_negative",
+            }
+        )
+
+        removed_conflict = int(
+            conflict_mask.sum()
+        )
+
+        model_df = (
+            model_df[
+                ~conflict_mask
+            ]
+            .copy()
+            .reset_index(
+                drop=True
+            )
+        )
+
+    sentence_subset = []
+
+    if sentence_id_column:
+        sentence_subset.append(
+            sentence_id_column
+        )
+    else:
+        sentence_subset.append(
+            text_column
+        )
+
+    if domain_column:
+        sentence_subset.append(
+            domain_column
+        )
+
+    sentences_df = (
+        eda_df
+        .drop_duplicates(
+            subset=sentence_subset,
+            keep="first",
+        )
+        .copy()
+        .reset_index(
+            drop=True
+        )
+    )
+
+    return {
+        "all": eda_df,
+        "model": model_df,
+        "sentences": sentences_df,
+        "columns": {
+            "text":
+                text_column,
+            "aspect":
+                aspect_column,
+            "sentiment":
+                sentiment_column,
+            "domain":
+                domain_column,
+            "sentence_id":
+                sentence_id_column,
+            "preprocessed":
+                preprocessed_column,
+        },
+        "removed_duplicates":
+            int(
+                removed_duplicates
+            ),
+        "removed_conflict":
+            int(
+                removed_conflict
+            ),
+    }
+
+
+def training_token_frequencies(
+    sentences_df: pd.DataFrame,
+    text_column: str,
+    preprocessed_column: str | None,
+    top_n: int = 20,
+):
+    """
+    Build corpus word frequencies from unique sentences.
+
+    Prefer the already-preprocessed training text. If that field is not
+    available, use the project's production preprocessing function.
+    """
+    if (
+        sentences_df.empty
+        or not text_column
+    ):
+        return pd.DataFrame(
+            columns=[
+                "Token",
+                "Frequency",
+            ]
+        )
+
+    if (
+        preprocessed_column
+        and preprocessed_column
+        in sentences_df.columns
+    ):
+        text_values = (
+            sentences_df[
+                preprocessed_column
+            ]
+            .fillna("")
+            .astype(str)
+            .tolist()
+        )
+    else:
+        text_values = [
+            safe_preprocess_text(
+                value
+            )
+            for value
+            in sentences_df[
+                text_column
+            ]
+            .fillna("")
+            .astype(str)
+            .tolist()
+        ]
+
+    counter = Counter()
+
+    for value in text_values:
+        tokens = [
+            token.casefold()
+            for token
+            in re.findall(
+                r"[A-Za-z]+(?:'[A-Za-z]+)?",
+                str(
+                    value
+                ),
+            )
+            if len(
+                token
+            ) > 1
+        ]
+
+        counter.update(
+            tokens
+        )
+
+    return pd.DataFrame(
+        counter.most_common(
+            top_n
+        ),
+        columns=[
+            "Token",
+            "Frequency",
+        ],
+    )
 
 
 def instructional_preprocessing_steps(text):
@@ -1838,402 +2213,1060 @@ elif st.session_state.page == "Data Explorer":
 
     st.markdown(
         '<div class="section-kicker">Data Explorer</div>'
-        '<div class="section-title">Current analysis data</div>',
+        '<div class="section-title">Exploratory text analytics</div>',
         unsafe_allow_html=True,
     )
 
-    if not st.session_state.analyses:
-        st.info(
-            "No user data is available yet. Enter review text or upload a "
-            "file on the Analyze page, run the analysis, and the submitted "
-            "data will appear here."
-        )
+    st.caption(
+        "Explore the SemEval model-development corpus and compare it with "
+        "the review data submitted in the current AspectIQ session."
+    )
 
-        if st.button(
-            "Go to Analyze",
-            type="primary",
-            key="data_explorer_go_analyze",
-        ):
-            st.session_state.page = "Analyze"
-            st.rerun()
+    dataset_tab, current_tab = st.tabs(
+        [
+            "SemEval Dataset EDA",
+            "Current Analysis",
+        ]
+    )
 
-    else:
-        review_df = build_submitted_reviews_dataframe(
-            st.session_state.analyses
-        )
+    # --------------------------------------------------------
+    # ACADEMIC DATASET EDA
+    # --------------------------------------------------------
+    with dataset_tab:
+        training_df = load_training_corpus()
 
-        aspect_df = st.session_state.results_df.copy()
-
-        metric_cols = st.columns(4)
-
-        with metric_cols[0]:
-            st.metric(
-                "Reviews Submitted",
-                f"{len(review_df):,}",
+        if training_df.empty:
+            st.warning(
+                "The SemEval training corpus is not available in this "
+                "deployment. Confirm that "
+                "`data/processed/absa_train_preprocessed.csv` is present."
             )
 
-        with metric_cols[1]:
-            st.metric(
-                "Aspects Detected",
-                (
-                    f"{len(aspect_df):,}"
-                    if not aspect_df.empty
-                    else "0"
-                ),
+        else:
+            eda = prepare_training_eda_data(
+                training_df
             )
 
-        with metric_cols[2]:
-            st.metric(
-                "Domains Detected",
-                (
-                    review_df[
-                        "Detected Domain"
-                    ].nunique()
-                    if not review_df.empty
-                    else 0
-                ),
-            )
-
-        with metric_cols[3]:
-            st.metric(
-                "Unique Aspects",
-                (
-                    aspect_df[
-                        "Aspect"
-                    ].nunique()
-                    if (
-                        not aspect_df.empty
-                        and "Aspect"
-                        in aspect_df.columns
-                    )
-                    else 0
-                ),
-            )
-
-        review_tab, aspect_tab = st.tabs(
-            [
-                "Submitted Reviews",
-                "Aspect-Level Analysis",
+            eda_df = eda[
+                "all"
             ]
-        )
 
-        with review_tab:
-            st.caption(
-                "This table contains the text supplied by the user, whether "
-                "entered directly or loaded from an uploaded file."
+            model_eda_df = eda[
+                "model"
+            ]
+
+            sentences_df = eda[
+                "sentences"
+            ]
+
+            columns = eda[
+                "columns"
+            ]
+
+            text_column = columns.get(
+                "text"
             )
 
-            domain_values = sorted(
-                review_df[
-                    "Detected Domain"
-                ]
-                .dropna()
-                .astype(str)
-                .unique()
-                .tolist()
+            aspect_column = columns.get(
+                "aspect"
             )
 
-            filter_col1, filter_col2 = st.columns(
-                [1, 2]
+            sentiment_column = columns.get(
+                "sentiment"
             )
 
-            with filter_col1:
-                selected_domains = st.multiselect(
-                    "Detected Domain",
-                    domain_values,
-                    default=domain_values,
-                    key="submitted_review_domains",
-                )
-
-            with filter_col2:
-                review_search = st.text_input(
-                    "Search review text",
-                    placeholder=(
-                        "Search words or phrases in the submitted reviews"
-                    ),
-                    key="submitted_review_search",
-                )
-
-            filtered_reviews = review_df.copy()
-
-            if selected_domains:
-                filtered_reviews = filtered_reviews[
-                    filtered_reviews[
-                        "Detected Domain"
-                    ]
-                    .astype(str)
-                    .isin(
-                        selected_domains
-                    )
-                ]
-
-            if review_search.strip():
-                filtered_reviews = filtered_reviews[
-                    filtered_reviews[
-                        "Review"
-                    ]
-                    .astype(str)
-                    .str.contains(
-                        review_search.strip(),
-                        case=False,
-                        na=False,
-                    )
-                ]
-
-            st.caption(
-                f"Showing {len(filtered_reviews):,} of "
-                f"{len(review_df):,} submitted review(s)."
+            domain_column = columns.get(
+                "domain"
             )
 
-            st.dataframe(
-                filtered_reviews,
-                use_container_width=True,
-                hide_index=True,
+            preprocessed_column = columns.get(
+                "preprocessed"
             )
 
-            if not filtered_reviews.empty:
-                domain_counts = (
-                    filtered_reviews[
-                        "Detected Domain"
-                    ]
-                    .value_counts()
-                    .rename_axis("Domain")
-                    .reset_index(name="Reviews")
-                )
-
-                fig = px.bar(
-                    domain_counts,
-                    x="Domain",
-                    y="Reviews",
-                    text="Reviews",
-                    title="Detected Domain Distribution",
-                )
-
-                fig.update_traces(
-                    marker_color="#2C6FF2"
-                )
-
-                fig.update_layout(
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                )
-
-                st.plotly_chart(
-                    fig,
-                    use_container_width=True,
-                    config={
-                        "displayModeBar": False
-                    },
-                )
-
-        with aspect_tab:
-            if aspect_df.empty:
+            if eda_df.empty:
                 st.warning(
-                    "The submitted review data is available, but no aspects "
-                    "were detected for the current analysis."
+                    "The training file was found, but no usable EDA records "
+                    "could be prepared."
                 )
 
             else:
-                filter_columns = st.columns(3)
-
-                with filter_columns[0]:
-                    domain_values = sorted(
-                        aspect_df[
-                            "Detected Domain"
-                        ]
-                        .dropna()
-                        .astype(str)
-                        .unique()
-                        .tolist()
-                    )
-
-                    selected_domains = st.multiselect(
-                        "Domain",
-                        domain_values,
-                        default=domain_values,
-                        key="aspect_data_domains",
-                    )
-
-                with filter_columns[1]:
-                    sentiment_values = sorted(
-                        aspect_df[
-                            "Sentiment"
-                        ]
-                        .dropna()
-                        .astype(str)
-                        .unique()
-                        .tolist()
-                    )
-
-                    selected_sentiments = st.multiselect(
-                        "Sentiment",
-                        sentiment_values,
-                        default=sentiment_values,
-                        key="aspect_data_sentiments",
-                    )
-
-                with filter_columns[2]:
-                    aspect_search = st.text_input(
-                        "Aspect contains",
-                        placeholder=(
-                            "e.g. screen, battery, service"
-                        ),
-                        key="aspect_data_search",
-                    )
-
-                filtered_aspects = aspect_df.copy()
-
-                if selected_domains:
-                    filtered_aspects = filtered_aspects[
-                        filtered_aspects[
-                            "Detected Domain"
-                        ]
-                        .astype(str)
-                        .isin(
-                            selected_domains
-                        )
-                    ]
-
-                if selected_sentiments:
-                    filtered_aspects = filtered_aspects[
-                        filtered_aspects[
-                            "Sentiment"
-                        ]
-                        .astype(str)
-                        .isin(
-                            selected_sentiments
-                        )
-                    ]
-
-                if aspect_search.strip():
-                    filtered_aspects = filtered_aspects[
-                        filtered_aspects[
-                            "Aspect"
-                        ]
-                        .astype(str)
-                        .str.contains(
-                            aspect_search.strip(),
-                            case=False,
-                            na=False,
-                        )
-                    ]
-
-                st.caption(
-                    f"Showing {len(filtered_aspects):,} of "
-                    f"{len(aspect_df):,} detected aspect result(s)."
+                st.markdown(
+                    '<div class="section-title" style="margin-top:.35rem;">'
+                    '1. Corpus Overview'
+                    '</div>',
+                    unsafe_allow_html=True,
                 )
 
-                st.dataframe(
-                    filtered_aspects,
-                    use_container_width=True,
-                    hide_index=True,
+                unique_aspects = (
+                    model_eda_df[
+                        aspect_column
+                    ].nunique()
+                    if (
+                        aspect_column
+                        and aspect_column
+                        in model_eda_df.columns
+                    )
+                    else 0
                 )
 
-                if not filtered_aspects.empty:
-                    chart_left, chart_right = st.columns(2)
+                domain_count = (
+                    sentences_df[
+                        domain_column
+                    ].nunique()
+                    if (
+                        domain_column
+                        and domain_column
+                        in sentences_df.columns
+                    )
+                    else 0
+                )
 
-                    with chart_left:
+                overview_cols = st.columns(
+                    4
+                )
+
+                with overview_cols[0]:
+                    st.metric(
+                        "Unique Sentences",
+                        f"{len(sentences_df):,}",
+                    )
+
+                with overview_cols[1]:
+                    st.metric(
+                        "3-Class Aspect Records",
+                        f"{len(model_eda_df):,}",
+                    )
+
+                with overview_cols[2]:
+                    st.metric(
+                        "Unique Aspects",
+                        f"{unique_aspects:,}",
+                    )
+
+                with overview_cols[3]:
+                    st.metric(
+                        "Domains",
+                        f"{domain_count:,}",
+                    )
+
+                policy_messages = []
+
+                if eda[
+                    "removed_duplicates"
+                ]:
+                    policy_messages.append(
+                        f"{eda['removed_duplicates']:,} blank/exact duplicate "
+                        "aspect record(s) excluded"
+                    )
+
+                if eda[
+                    "removed_conflict"
+                ]:
+                    policy_messages.append(
+                        f"{eda['removed_conflict']:,} conflict/mixed record(s) "
+                        "excluded from the operational three-class view"
+                    )
+
+                if policy_messages:
+                    st.caption(
+                        "EDA modelling view: "
+                        + "; ".join(
+                            policy_messages
+                        )
+                        + "."
+                    )
+
+                # ------------------------------------------------
+                # CLASS + DOMAIN DISTRIBUTIONS
+                # ------------------------------------------------
+                st.markdown(
+                    '<div class="section-title" style="margin-top:1.15rem;">'
+                    '2. Sentiment and Domain Distributions'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+
+                distribution_left, distribution_right = st.columns(
+                    2
+                )
+
+                with distribution_left:
+                    if (
+                        sentiment_column
+                        and sentiment_column
+                        in model_eda_df.columns
+                    ):
                         sentiment_counts = (
-                            filtered_aspects[
-                                "Sentiment"
+                            model_eda_df[
+                                sentiment_column
                             ]
+                            .astype(str)
+                            .str.title()
                             .value_counts()
-                            .rename_axis("Sentiment")
-                            .reset_index(name="Count")
+                            .rename_axis(
+                                "Sentiment"
+                            )
+                            .reset_index(
+                                name="Count"
+                            )
                         )
 
-                        fig = px.bar(
+                        sentiment_fig = px.bar(
                             sentiment_counts,
                             x="Sentiment",
                             y="Count",
                             text="Count",
-                            title="Current Sentiment Distribution",
+                            title=(
+                                "Sentiment Class Distribution "
+                                "(Operational 3-Class Data)"
+                            ),
                             color="Sentiment",
                             color_discrete_map={
-                                "Positive": "#23A447",
-                                "Negative": "#E23939",
-                                "Neutral": "#F59E0B",
+                                "Positive":
+                                    "#23A447",
+                                "Negative":
+                                    "#E23939",
+                                "Neutral":
+                                    "#F59E0B",
                             },
                         )
 
-                        fig.update_layout(
+                        sentiment_fig.update_layout(
                             paper_bgcolor="rgba(0,0,0,0)",
                             plot_bgcolor="rgba(0,0,0,0)",
+                            xaxis_title=None,
                         )
 
                         st.plotly_chart(
-                            fig,
+                            sentiment_fig,
                             use_container_width=True,
                             config={
-                                "displayModeBar": False
+                                "displayModeBar":
+                                    False
                             },
                         )
 
-                    with chart_right:
-                        top_aspects = (
-                            filtered_aspects[
-                                "Aspect"
+                        st.caption(
+                            "The unequal class counts justify reporting "
+                            "macro-averaged Precision, Recall and F1-score "
+                            "during model evaluation."
+                        )
+
+                    else:
+                        st.info(
+                            "A sentiment/label column was not found in the "
+                            "training corpus."
+                        )
+
+                with distribution_right:
+                    if (
+                        domain_column
+                        and domain_column
+                        in sentences_df.columns
+                    ):
+                        domain_counts = (
+                            sentences_df[
+                                domain_column
                             ]
-                            .dropna()
                             .astype(str)
+                            .str.title()
                             .value_counts()
-                            .head(12)
-                            .rename_axis("Aspect")
-                            .reset_index(name="Count")
+                            .rename_axis(
+                                "Domain"
+                            )
+                            .reset_index(
+                                name="Sentences"
+                            )
                         )
 
-                        fig = px.bar(
-                            top_aspects,
-                            x="Count",
-                            y="Aspect",
-                            orientation="h",
-                            text="Count",
-                            title="Current Detected Aspects",
+                        domain_fig = px.bar(
+                            domain_counts,
+                            x="Domain",
+                            y="Sentences",
+                            text="Sentences",
+                            title=(
+                                "Domain Distribution "
+                                "(Unique Sentences)"
+                            ),
                         )
 
-                        fig.update_traces(
+                        domain_fig.update_traces(
                             marker_color="#2C6FF2"
                         )
 
-                        fig.update_layout(
-                            yaxis={
-                                "categoryorder":
-                                    "total ascending"
-                            },
+                        domain_fig.update_layout(
                             paper_bgcolor="rgba(0,0,0,0)",
                             plot_bgcolor="rgba(0,0,0,0)",
+                            xaxis_title=None,
                         )
 
                         st.plotly_chart(
-                            fig,
+                            domain_fig,
                             use_container_width=True,
                             config={
-                                "displayModeBar": False
+                                "displayModeBar":
+                                    False
                             },
                         )
 
-        # Training data is retained only as an optional academic reference.
-        with st.expander(
-            "Reference: SemEval training corpus",
-            expanded=False,
-        ):
-            training_df = load_training_corpus()
+                    else:
+                        st.info(
+                            "A domain column was not found in the training "
+                            "corpus."
+                        )
 
-            if training_df.empty:
-                st.caption(
-                    "Training corpus is not available in this deployment."
+                if (
+                    sentiment_column
+                    and domain_column
+                    and sentiment_column
+                    in model_eda_df.columns
+                    and domain_column
+                    in model_eda_df.columns
+                ):
+                    cross_counts = (
+                        model_eda_df.assign(
+                            _Sentiment=(
+                                model_eda_df[
+                                    sentiment_column
+                                ]
+                                .astype(str)
+                                .str.title()
+                            ),
+                            _Domain=(
+                                model_eda_df[
+                                    domain_column
+                                ]
+                                .astype(str)
+                                .str.title()
+                            ),
+                        )
+                        .groupby(
+                            [
+                                "_Domain",
+                                "_Sentiment",
+                            ],
+                            observed=False,
+                        )
+                        .size()
+                        .reset_index(
+                            name="Count"
+                        )
+                        .rename(
+                            columns={
+                                "_Domain":
+                                    "Domain",
+                                "_Sentiment":
+                                    "Sentiment",
+                            }
+                        )
+                    )
+
+                    cross_fig = px.bar(
+                        cross_counts,
+                        x="Domain",
+                        y="Count",
+                        color="Sentiment",
+                        barmode="group",
+                        title="Sentiment Distribution by Domain",
+                        color_discrete_map={
+                            "Positive":
+                                "#23A447",
+                            "Negative":
+                                "#E23939",
+                            "Neutral":
+                                "#F59E0B",
+                        },
+                    )
+
+                    cross_fig.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        xaxis_title=None,
+                    )
+
+                    st.plotly_chart(
+                        cross_fig,
+                        use_container_width=True,
+                        config={
+                            "displayModeBar":
+                                False
+                        },
+                    )
+
+                # ------------------------------------------------
+                # ASPECT FREQUENCY
+                # ------------------------------------------------
+                st.markdown(
+                    '<div class="section-title" style="margin-top:1.15rem;">'
+                    '3. Frequent Aspects'
+                    '</div>',
+                    unsafe_allow_html=True,
                 )
-            else:
+
+                if (
+                    aspect_column
+                    and aspect_column
+                    in model_eda_df.columns
+                ):
+                    top_aspects = (
+                        model_eda_df[
+                            aspect_column
+                        ]
+                        .dropna()
+                        .astype(str)
+                        .str.strip()
+                        .value_counts()
+                        .head(
+                            15
+                        )
+                        .rename_axis(
+                            "Aspect"
+                        )
+                        .reset_index(
+                            name="Frequency"
+                        )
+                    )
+
+                    aspect_fig = px.bar(
+                        top_aspects,
+                        x="Frequency",
+                        y="Aspect",
+                        orientation="h",
+                        text="Frequency",
+                        title="Top 15 Aspect Terms",
+                    )
+
+                    aspect_fig.update_traces(
+                        marker_color="#2C6FF2"
+                    )
+
+                    aspect_fig.update_layout(
+                        yaxis={
+                            "categoryorder":
+                                "total ascending"
+                        },
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                    )
+
+                    st.plotly_chart(
+                        aspect_fig,
+                        use_container_width=True,
+                        config={
+                            "displayModeBar":
+                                False
+                        },
+                    )
+
+                    st.caption(
+                        "Aspect frequencies show which product/service "
+                        "attributes occur most often in the training corpus "
+                        "and support the aspect lexicon used by AspectIQ."
+                    )
+
+                else:
+                    st.info(
+                        "An aspect column was not found in the training corpus."
+                    )
+
+                # ------------------------------------------------
+                # TEXT LENGTH
+                # ------------------------------------------------
+                st.markdown(
+                    '<div class="section-title" style="margin-top:1.15rem;">'
+                    '4. Review Length Analysis'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+
+                sentence_lengths = (
+                    sentences_df[
+                        text_column
+                    ]
+                    .fillna("")
+                    .astype(str)
+                    .map(
+                        lambda value:
+                            len(
+                                re.findall(
+                                    r"\b\w+\b",
+                                    value,
+                                )
+                            )
+                    )
+                )
+
+                length_df = pd.DataFrame(
+                    {
+                        "Token Count":
+                            sentence_lengths
+                    }
+                )
+
+                length_metrics = st.columns(
+                    4
+                )
+
+                with length_metrics[0]:
+                    st.metric(
+                        "Mean Tokens",
+                        f"{sentence_lengths.mean():.1f}",
+                    )
+
+                with length_metrics[1]:
+                    st.metric(
+                        "Median Tokens",
+                        f"{sentence_lengths.median():.0f}",
+                    )
+
+                with length_metrics[2]:
+                    st.metric(
+                        "Shortest",
+                        f"{sentence_lengths.min():.0f}",
+                    )
+
+                with length_metrics[3]:
+                    st.metric(
+                        "Longest",
+                        f"{sentence_lengths.max():.0f}",
+                    )
+
+                length_fig = px.histogram(
+                    length_df,
+                    x="Token Count",
+                    nbins=35,
+                    title=(
+                        "Distribution of Review/Sentence Length "
+                        "(Word Tokens)"
+                    ),
+                )
+
+                length_fig.update_traces(
+                    marker_color="#2C6FF2"
+                )
+
+                length_fig.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    yaxis_title="Sentences",
+                )
+
+                st.plotly_chart(
+                    length_fig,
+                    use_container_width=True,
+                    config={
+                        "displayModeBar":
+                            False
+                    },
+                )
+
+                # ------------------------------------------------
+                # WORD FREQUENCIES
+                # ------------------------------------------------
+                st.markdown(
+                    '<div class="section-title" style="margin-top:1.15rem;">'
+                    '5. Word Frequency Analysis'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+
+                frequency_df = training_token_frequencies(
+                    sentences_df=sentences_df,
+                    text_column=text_column,
+                    preprocessed_column=preprocessed_column,
+                    top_n=20,
+                )
+
+                if frequency_df.empty:
+                    st.info(
+                        "No token frequencies could be generated."
+                    )
+
+                else:
+                    word_fig = px.bar(
+                        frequency_df,
+                        x="Frequency",
+                        y="Token",
+                        orientation="h",
+                        text="Frequency",
+                        title=(
+                            "Top 20 Tokens after Model Text Preprocessing"
+                        ),
+                    )
+
+                    word_fig.update_traces(
+                        marker_color="#2C6FF2"
+                    )
+
+                    word_fig.update_layout(
+                        yaxis={
+                            "categoryorder":
+                                "total ascending"
+                        },
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                    )
+
+                    st.plotly_chart(
+                        word_fig,
+                        use_container_width=True,
+                        config={
+                            "displayModeBar":
+                                False
+                        },
+                    )
+
+                    st.caption(
+                        "Frequencies use the preprocessed corpus where "
+                        "available, so high-frequency terms reflect the text "
+                        "representation after cleaning and stopword handling."
+                    )
+
+                # ------------------------------------------------
+                # DATA SAMPLE
+                # ------------------------------------------------
+                with st.expander(
+                    "View SemEval training data sample",
+                    expanded=False,
+                ):
+                    st.caption(
+                        "This table is the model-development reference corpus. "
+                        "It is separate from reviews submitted by the user."
+                    )
+
+                    st.dataframe(
+                        training_df.head(
+                            75
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+    # --------------------------------------------------------
+    # CURRENT USER DATA
+    # --------------------------------------------------------
+    with current_tab:
+        st.markdown(
+            '<div class="section-title" style="margin-top:.35rem;">'
+            'Current Session Analysis'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        if not st.session_state.analyses:
+            st.info(
+                "No user data is available yet. Enter review text or upload "
+                "a file on the Analyze page, run the analysis, and the "
+                "submitted data will appear here."
+            )
+
+            if st.button(
+                "Go to Analyze",
+                type="primary",
+                key="data_explorer_go_analyze",
+            ):
+                st.session_state.page = "Analyze"
+                st.rerun()
+
+        else:
+            review_df = build_submitted_reviews_dataframe(
+                st.session_state.analyses
+            )
+
+            aspect_df = (
+                st.session_state.results_df.copy()
+            )
+
+            metric_cols = st.columns(
+                4
+            )
+
+            with metric_cols[0]:
+                st.metric(
+                    "Reviews Submitted",
+                    f"{len(review_df):,}",
+                )
+
+            with metric_cols[1]:
+                st.metric(
+                    "Aspects Detected",
+                    (
+                        f"{len(aspect_df):,}"
+                        if not aspect_df.empty
+                        else "0"
+                    ),
+                )
+
+            with metric_cols[2]:
+                st.metric(
+                    "Domains Detected",
+                    (
+                        review_df[
+                            "Detected Domain"
+                        ].nunique()
+                        if not review_df.empty
+                        else 0
+                    ),
+                )
+
+            with metric_cols[3]:
+                st.metric(
+                    "Unique Aspects",
+                    (
+                        aspect_df[
+                            "Aspect"
+                        ].nunique()
+                        if (
+                            not aspect_df.empty
+                            and "Aspect"
+                            in aspect_df.columns
+                        )
+                        else 0
+                    ),
+                )
+
+            review_tab, aspect_tab = st.tabs(
+                [
+                    "Submitted Reviews",
+                    "Aspect-Level Analysis",
+                ]
+            )
+
+            with review_tab:
                 st.caption(
-                    "This is the model-development reference dataset, not "
-                    "the user's current analysis data."
+                    "This table contains the text supplied by the user, "
+                    "whether entered directly or loaded from an uploaded file."
+                )
+
+                domain_values = sorted(
+                    review_df[
+                        "Detected Domain"
+                    ]
+                    .dropna()
+                    .astype(str)
+                    .unique()
+                    .tolist()
+                )
+
+                filter_col1, filter_col2 = st.columns(
+                    [
+                        1,
+                        2,
+                    ]
+                )
+
+                with filter_col1:
+                    selected_domains = st.multiselect(
+                        "Detected Domain",
+                        domain_values,
+                        default=domain_values,
+                        key="submitted_review_domains",
+                    )
+
+                with filter_col2:
+                    review_search = st.text_input(
+                        "Search review text",
+                        placeholder=(
+                            "Search words or phrases in the submitted reviews"
+                        ),
+                        key="submitted_review_search",
+                    )
+
+                filtered_reviews = review_df.copy()
+
+                if selected_domains:
+                    filtered_reviews = (
+                        filtered_reviews[
+                            filtered_reviews[
+                                "Detected Domain"
+                            ]
+                            .astype(str)
+                            .isin(
+                                selected_domains
+                            )
+                        ]
+                    )
+
+                if review_search.strip():
+                    filtered_reviews = (
+                        filtered_reviews[
+                            filtered_reviews[
+                                "Review"
+                            ]
+                            .astype(str)
+                            .str.contains(
+                                review_search.strip(),
+                                case=False,
+                                na=False,
+                            )
+                        ]
+                    )
+
+                st.caption(
+                    f"Showing {len(filtered_reviews):,} of "
+                    f"{len(review_df):,} submitted review(s)."
                 )
 
                 st.dataframe(
-                    training_df.head(50),
+                    filtered_reviews,
                     use_container_width=True,
                     hide_index=True,
                 )
+
+                if not filtered_reviews.empty:
+                    domain_counts = (
+                        filtered_reviews[
+                            "Detected Domain"
+                        ]
+                        .value_counts()
+                        .rename_axis(
+                            "Domain"
+                        )
+                        .reset_index(
+                            name="Reviews"
+                        )
+                    )
+
+                    fig = px.bar(
+                        domain_counts,
+                        x="Domain",
+                        y="Reviews",
+                        text="Reviews",
+                        title="Detected Domain Distribution",
+                    )
+
+                    fig.update_traces(
+                        marker_color="#2C6FF2"
+                    )
+
+                    fig.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                    )
+
+                    st.plotly_chart(
+                        fig,
+                        use_container_width=True,
+                        config={
+                            "displayModeBar":
+                                False
+                        },
+                    )
+
+            with aspect_tab:
+                if aspect_df.empty:
+                    st.warning(
+                        "The submitted review data is available, but no "
+                        "aspects were detected for the current analysis."
+                    )
+
+                else:
+                    filter_columns = st.columns(
+                        3
+                    )
+
+                    with filter_columns[0]:
+                        domain_values = sorted(
+                            aspect_df[
+                                "Detected Domain"
+                            ]
+                            .dropna()
+                            .astype(str)
+                            .unique()
+                            .tolist()
+                        )
+
+                        selected_domains = st.multiselect(
+                            "Domain",
+                            domain_values,
+                            default=domain_values,
+                            key="aspect_data_domains",
+                        )
+
+                    with filter_columns[1]:
+                        sentiment_values = sorted(
+                            aspect_df[
+                                "Sentiment"
+                            ]
+                            .dropna()
+                            .astype(str)
+                            .unique()
+                            .tolist()
+                        )
+
+                        selected_sentiments = st.multiselect(
+                            "Sentiment",
+                            sentiment_values,
+                            default=sentiment_values,
+                            key="aspect_data_sentiments",
+                        )
+
+                    with filter_columns[2]:
+                        aspect_search = st.text_input(
+                            "Aspect contains",
+                            placeholder=(
+                                "e.g. screen, battery, service"
+                            ),
+                            key="aspect_data_search",
+                        )
+
+                    filtered_aspects = (
+                        aspect_df.copy()
+                    )
+
+                    if selected_domains:
+                        filtered_aspects = (
+                            filtered_aspects[
+                                filtered_aspects[
+                                    "Detected Domain"
+                                ]
+                                .astype(str)
+                                .isin(
+                                    selected_domains
+                                )
+                            ]
+                        )
+
+                    if selected_sentiments:
+                        filtered_aspects = (
+                            filtered_aspects[
+                                filtered_aspects[
+                                    "Sentiment"
+                                ]
+                                .astype(str)
+                                .isin(
+                                    selected_sentiments
+                                )
+                            ]
+                        )
+
+                    if aspect_search.strip():
+                        filtered_aspects = (
+                            filtered_aspects[
+                                filtered_aspects[
+                                    "Aspect"
+                                ]
+                                .astype(str)
+                                .str.contains(
+                                    aspect_search.strip(),
+                                    case=False,
+                                    na=False,
+                                )
+                            ]
+                        )
+
+                    st.caption(
+                        f"Showing {len(filtered_aspects):,} of "
+                        f"{len(aspect_df):,} detected aspect result(s)."
+                    )
+
+                    st.dataframe(
+                        filtered_aspects,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    if not filtered_aspects.empty:
+                        chart_left, chart_right = st.columns(
+                            2
+                        )
+
+                        with chart_left:
+                            sentiment_counts = (
+                                filtered_aspects[
+                                    "Sentiment"
+                                ]
+                                .value_counts()
+                                .rename_axis(
+                                    "Sentiment"
+                                )
+                                .reset_index(
+                                    name="Count"
+                                )
+                            )
+
+                            fig = px.bar(
+                                sentiment_counts,
+                                x="Sentiment",
+                                y="Count",
+                                text="Count",
+                                title=(
+                                    "Current Sentiment Distribution"
+                                ),
+                                color="Sentiment",
+                                color_discrete_map={
+                                    "Positive":
+                                        "#23A447",
+                                    "Negative":
+                                        "#E23939",
+                                    "Neutral":
+                                        "#F59E0B",
+                                },
+                            )
+
+                            fig.update_layout(
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                plot_bgcolor="rgba(0,0,0,0)",
+                            )
+
+                            st.plotly_chart(
+                                fig,
+                                use_container_width=True,
+                                config={
+                                    "displayModeBar":
+                                        False
+                                },
+                            )
+
+                        with chart_right:
+                            top_aspects = (
+                                filtered_aspects[
+                                    "Aspect"
+                                ]
+                                .dropna()
+                                .astype(str)
+                                .value_counts()
+                                .head(
+                                    12
+                                )
+                                .rename_axis(
+                                    "Aspect"
+                                )
+                                .reset_index(
+                                    name="Count"
+                                )
+                            )
+
+                            fig = px.bar(
+                                top_aspects,
+                                x="Count",
+                                y="Aspect",
+                                orientation="h",
+                                text="Count",
+                                title="Current Detected Aspects",
+                            )
+
+                            fig.update_traces(
+                                marker_color="#2C6FF2"
+                            )
+
+                            fig.update_layout(
+                                yaxis={
+                                    "categoryorder":
+                                        "total ascending"
+                                },
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                plot_bgcolor="rgba(0,0,0,0)",
+                            )
+
+                            st.plotly_chart(
+                                fig,
+                                use_container_width=True,
+                                config={
+                                    "displayModeBar":
+                                        False
+                                },
+                            )
 
 
 # ============================================================
@@ -2495,8 +3528,729 @@ elif st.session_state.page == "Model Lab":
     )
 
     # --------------------------------------------------------
+    # FINAL TWO-MODEL EVALUATION
+    # --------------------------------------------------------
+    st.markdown(
+        '<div class="section-title" style="margin-top:.35rem;">'
+        '1. Detailed Class-Level Evaluation'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "Precision, recall and F1-score are shown first for each sentiment "
+        "class. The macro and weighted averages are then shown separately "
+        "so the overall scores can be traced back to class-level performance."
+    )
+
+    def _read_classification_report(
+        model_slug: str,
+    ):
+        report_file = (
+            FINAL_MODEL_COMPARISON_DIR
+            / f"{model_slug}_classification_report.csv"
+        )
+
+        if not report_file.exists():
+            return None
+
+        try:
+            report_df = pd.read_csv(
+                report_file
+            )
+        except Exception:
+            return None
+
+        if "class" not in report_df.columns:
+            first_column = (
+                report_df.columns[
+                    0
+                ]
+                if len(
+                    report_df.columns
+                )
+                else None
+            )
+
+            if first_column:
+                report_df = (
+                    report_df.rename(
+                        columns={
+                            first_column:
+                                "class"
+                        }
+                    )
+                )
+
+        return report_df
+
+    def _show_classification_report(
+        model_name: str,
+        model_slug: str,
+    ):
+        report_df = (
+            _read_classification_report(
+                model_slug
+            )
+        )
+
+        if (
+            report_df is None
+            or "class"
+            not in report_df.columns
+        ):
+            st.info(
+                f"Detailed {model_name} class metrics will appear here "
+                "when the final comparison output files are available in "
+                "`outputs/final_model_comparison`."
+            )
+            return
+
+        report_df[
+            "class"
+        ] = (
+            report_df[
+                "class"
+            ]
+            .astype(
+                str
+            )
+            .str.strip()
+            .str.casefold()
+        )
+
+        class_order = [
+            "negative",
+            "neutral",
+            "positive",
+        ]
+
+        class_rows = (
+            report_df[
+                report_df[
+                    "class"
+                ].isin(
+                    class_order
+                )
+            ]
+            .copy()
+        )
+
+        if not class_rows.empty:
+            class_rows[
+                "_order"
+            ] = (
+                class_rows[
+                    "class"
+                ].map(
+                    {
+                        label: index
+                        for index, label
+                        in enumerate(
+                            class_order
+                        )
+                    }
+                )
+            )
+
+            class_rows = (
+                class_rows
+                .sort_values(
+                    "_order"
+                )
+                .drop(
+                    columns=[
+                        "_order"
+                    ]
+                )
+            )
+
+            detail_columns = [
+                column
+                for column
+                in [
+                    "class",
+                    "precision",
+                    "recall",
+                    "f1-score",
+                    "support",
+                ]
+                if column
+                in class_rows.columns
+            ]
+
+            detail_df = (
+                class_rows[
+                    detail_columns
+                ]
+                .rename(
+                    columns={
+                        "class":
+                            "Sentiment Class",
+                        "precision":
+                            "Precision",
+                        "recall":
+                            "Recall",
+                        "f1-score":
+                            "F1-Score",
+                        "support":
+                            "Support",
+                    }
+                )
+            )
+
+            detail_df[
+                "Sentiment Class"
+            ] = (
+                detail_df[
+                    "Sentiment Class"
+                ].str.title()
+            )
+
+            st.markdown(
+                f"**{model_name} — Per-Class Metrics**"
+            )
+
+            st.dataframe(
+                detail_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Precision":
+                        st.column_config.NumberColumn(
+                            format="%.4f"
+                        ),
+                    "Recall":
+                        st.column_config.NumberColumn(
+                            format="%.4f"
+                        ),
+                    "F1-Score":
+                        st.column_config.NumberColumn(
+                            format="%.4f"
+                        ),
+                    "Support":
+                        st.column_config.NumberColumn(
+                            format="%d"
+                        ),
+                },
+            )
+
+        average_rows = (
+            report_df[
+                report_df[
+                    "class"
+                ].isin(
+                    [
+                        "macro avg",
+                        "weighted avg",
+                    ]
+                )
+            ]
+            .copy()
+        )
+
+        if not average_rows.empty:
+            average_columns = [
+                column
+                for column
+                in [
+                    "class",
+                    "precision",
+                    "recall",
+                    "f1-score",
+                    "support",
+                ]
+                if column
+                in average_rows.columns
+            ]
+
+            averages_df = (
+                average_rows[
+                    average_columns
+                ]
+                .rename(
+                    columns={
+                        "class":
+                            "Average",
+                        "precision":
+                            "Precision",
+                        "recall":
+                            "Recall",
+                        "f1-score":
+                            "F1-Score",
+                        "support":
+                            "Support",
+                    }
+                )
+            )
+
+            averages_df[
+                "Average"
+            ] = (
+                averages_df[
+                    "Average"
+                ]
+                .replace(
+                    {
+                        "macro avg":
+                            "Macro Average",
+                        "weighted avg":
+                            "Weighted Average",
+                    }
+                )
+            )
+
+            st.markdown(
+                "**Averages**"
+            )
+
+            st.dataframe(
+                averages_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Precision":
+                        st.column_config.NumberColumn(
+                            format="%.4f"
+                        ),
+                    "Recall":
+                        st.column_config.NumberColumn(
+                            format="%.4f"
+                        ),
+                    "F1-Score":
+                        st.column_config.NumberColumn(
+                            format="%.4f"
+                        ),
+                    "Support":
+                        st.column_config.NumberColumn(
+                            format="%d"
+                        ),
+                },
+            )
+
+            st.caption(
+                "Macro Average gives Negative, Neutral and Positive equal "
+                "weight. Weighted Average weights each class by its support."
+            )
+
+    svm_tab, lr_tab = st.tabs(
+        [
+            "SVM — Best Model",
+            "Logistic Regression",
+        ]
+    )
+
+    with svm_tab:
+        _show_classification_report(
+            "Support Vector Machine (SVM)",
+            "svm",
+        )
+
+    with lr_tab:
+        _show_classification_report(
+            "Logistic Regression",
+            "logistic_regression",
+        )
+
+    # --------------------------------------------------------
+    # AGGREGATE MODEL COMPARISON
+    # --------------------------------------------------------
+    st.markdown(
+        '<div class="section-title" style="margin-top:1.25rem;">'
+        '2. Logistic Regression vs SVM'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    final_comparison_file = (
+        FINAL_MODEL_COMPARISON_DIR
+        / "model_comparison.csv"
+    )
+
+    fallback_model_comparison = pd.DataFrame(
+        [
+            {
+                "model": "SVM",
+                "accuracy": 0.679165,
+                "precision_macro": 0.626353,
+                "recall_macro": 0.639686,
+                "f1_macro": 0.630693,
+                "roc_auc_macro_ovr": 0.816772,
+                "rank_by_macro_f1": 1,
+            },
+            {
+                "model": "Logistic Regression",
+                "accuracy": 0.646807,
+                "precision_macro": 0.604484,
+                "recall_macro": 0.619990,
+                "f1_macro": 0.605992,
+                "roc_auc_macro_ovr": 0.807806,
+                "rank_by_macro_f1": 2,
+            },
+        ]
+    )
+
+    if final_comparison_file.exists():
+        try:
+            final_comparison_df = (
+                pd.read_csv(
+                    final_comparison_file
+                )
+            )
+        except Exception:
+            final_comparison_df = (
+                fallback_model_comparison.copy()
+            )
+    else:
+        final_comparison_df = (
+            fallback_model_comparison.copy()
+        )
+
+    required_comparison_columns = {
+        "model",
+        "accuracy",
+        "precision_macro",
+        "recall_macro",
+        "f1_macro",
+        "roc_auc_macro_ovr",
+    }
+
+    if not required_comparison_columns.issubset(
+        final_comparison_df.columns
+    ):
+        final_comparison_df = (
+            fallback_model_comparison.copy()
+        )
+
+    final_comparison_df = (
+        final_comparison_df
+        .sort_values(
+            [
+                "f1_macro",
+                "accuracy",
+            ],
+            ascending=False,
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    display_comparison_df = (
+        final_comparison_df[
+            [
+                "model",
+                "accuracy",
+                "precision_macro",
+                "recall_macro",
+                "f1_macro",
+                "roc_auc_macro_ovr",
+            ]
+        ]
+        .rename(
+            columns={
+                "model":
+                    "Model",
+                "accuracy":
+                    "Accuracy",
+                "precision_macro":
+                    "Precision (Macro)",
+                "recall_macro":
+                    "Recall (Macro)",
+                "f1_macro":
+                    "F1-Score (Macro)",
+                "roc_auc_macro_ovr":
+                    "ROC-AUC (Macro OvR)",
+            }
+        )
+    )
+
+    st.dataframe(
+        display_comparison_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Accuracy":
+                st.column_config.NumberColumn(
+                    format="%.4f"
+                ),
+            "Precision (Macro)":
+                st.column_config.NumberColumn(
+                    format="%.4f"
+                ),
+            "Recall (Macro)":
+                st.column_config.NumberColumn(
+                    format="%.4f"
+                ),
+            "F1-Score (Macro)":
+                st.column_config.NumberColumn(
+                    format="%.4f"
+                ),
+            "ROC-AUC (Macro OvR)":
+                st.column_config.NumberColumn(
+                    format="%.4f"
+                ),
+        },
+    )
+
+    st.caption(
+        "Macro means the metric is first calculated separately for Negative, "
+        "Neutral and Positive, then averaged with equal weight for each class. "
+        "The comparison uses grouped out-of-fold training predictions under "
+        "the same 200d Target Clause + Local Context GloVe representation."
+    )
+
+    model_chart_df = (
+        final_comparison_df[
+            [
+                "model",
+                "accuracy",
+                "precision_macro",
+                "recall_macro",
+                "f1_macro",
+                "roc_auc_macro_ovr",
+            ]
+        ]
+        .melt(
+            id_vars=[
+                "model"
+            ],
+            var_name="metric",
+            value_name="score",
+        )
+    )
+
+    metric_labels = {
+        "accuracy":
+            "Accuracy",
+        "precision_macro":
+            "Precision (Macro)",
+        "recall_macro":
+            "Recall (Macro)",
+        "f1_macro":
+            "F1-Score (Macro)",
+        "roc_auc_macro_ovr":
+            "ROC-AUC (Macro OvR)",
+    }
+
+    model_chart_df[
+        "metric"
+    ] = (
+        model_chart_df[
+            "metric"
+        ].map(
+            metric_labels
+        )
+    )
+
+    model_comparison_figure = px.bar(
+        model_chart_df,
+        x="metric",
+        y="score",
+        barmode="group",
+        text_auto=".3f",
+        pattern_shape="model",
+        title=(
+            "Model Performance under Identical 200d "
+            "Target-Context GloVe Features"
+        ),
+        labels={
+            "metric":
+                "Metric",
+            "score":
+                "Score",
+            "model":
+                "Model",
+        },
+    )
+
+    model_comparison_figure.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        yaxis_range=[
+            0,
+            1,
+        ],
+        xaxis_title=None,
+    )
+
+    st.plotly_chart(
+        model_comparison_figure,
+        use_container_width=True,
+        config={
+            "displayModeBar":
+                False
+        },
+    )
+
+    svm_row = (
+        final_comparison_df[
+            final_comparison_df[
+                "model"
+            ].astype(
+                str
+            ).str.casefold()
+            == "svm"
+        ]
+    )
+
+    lr_row = (
+        final_comparison_df[
+            final_comparison_df[
+                "model"
+            ].astype(
+                str
+            ).str.casefold()
+            == "logistic regression"
+        ]
+    )
+
+    if (
+        not svm_row.empty
+        and not lr_row.empty
+    ):
+        svm_values = (
+            svm_row.iloc[
+                0
+            ]
+        )
+        lr_values = (
+            lr_row.iloc[
+                0
+            ]
+        )
+
+        improvement_cols = (
+            st.columns(
+                5
+            )
+        )
+
+        improvement_metrics = [
+            (
+                "Accuracy",
+                "accuracy",
+            ),
+            (
+                "Precision",
+                "precision_macro",
+            ),
+            (
+                "Recall",
+                "recall_macro",
+            ),
+            (
+                "F1-Score",
+                "f1_macro",
+            ),
+            (
+                "ROC-AUC",
+                "roc_auc_macro_ovr",
+            ),
+        ]
+
+        for col, (
+            label,
+            field,
+        ) in zip(
+            improvement_cols,
+            improvement_metrics,
+        ):
+            difference = (
+                float(
+                    svm_values[
+                        field
+                    ]
+                )
+                - float(
+                    lr_values[
+                        field
+                    ]
+                )
+            )
+
+            with col:
+                st.metric(
+                    f"SVM Δ {label}",
+                    f"{difference:+.4f}",
+                )
+
+    st.success(
+        "Best Model: SVM. It achieved the highest Accuracy, Macro Precision, "
+        "Macro Recall, Macro F1-score and Macro ROC-AUC in the final "
+        "controlled comparison."
+    )
+
+    # --------------------------------------------------------
+    # CONFUSION MATRICES
+    # --------------------------------------------------------
+    st.markdown(
+        '<div class="section-title" style="margin-top:1.25rem;">'
+        '3. Confusion Matrices'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "The confusion matrices show where each model correctly classified "
+        "or confused the Negative, Neutral and Positive sentiment classes."
+    )
+
+    confusion_columns = st.columns(
+        2
+    )
+
+    confusion_items = [
+        (
+            confusion_columns[
+                0
+            ],
+            "SVM",
+            FINAL_MODEL_COMPARISON_DIR
+            / "svm_confusion_matrix.png",
+        ),
+        (
+            confusion_columns[
+                1
+            ],
+            "Logistic Regression",
+            FINAL_MODEL_COMPARISON_DIR
+            / "logistic_regression_confusion_matrix.png",
+        ),
+    ]
+
+    for (
+        column,
+        model_name,
+        image_path,
+    ) in confusion_items:
+        with column:
+            st.markdown(
+                f"**{model_name}**"
+            )
+
+            if image_path.exists():
+                st.image(
+                    str(
+                        image_path
+                    ),
+                    use_container_width=True,
+                )
+            else:
+                st.info(
+                    "Confusion matrix image will appear here when the "
+                    "final comparison output is available."
+                )
+
+    # --------------------------------------------------------
     # FINAL PRODUCTION MODEL
     # --------------------------------------------------------
+    st.markdown(
+        '<div class="section-title" style="margin-top:1.35rem;">'
+        '4. Selected Production Model'
+        '</div>',
+        unsafe_allow_html=True,
+    )
     production_model_file = (
         MODEL_DIR
         / "best_target_clause_local_3class.json"
@@ -2644,6 +4398,13 @@ elif st.session_state.page == "Model Lab":
     # --------------------------------------------------------
     # REPRESENTATION EXPERIMENT
     # --------------------------------------------------------
+    st.markdown(
+        '<div class="section-title" style="margin-top:1.35rem;">'
+        '5. GloVe Representation Experiment'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
     representation_file = (
         TARGET_CONTEXT_RESULTS_DIR
         / "representation_comparison.csv"
@@ -2755,13 +4516,6 @@ elif st.session_state.page == "Model Lab":
                 "roc_auc_macro_ovr_oof": "Grouped CV ROC-AUC",
             }
         )
-    )
-
-    st.markdown(
-        '<div class="section-title" style="margin-top:1.25rem;">'
-        'Training-Only Representation Comparison'
-        '</div>',
-        unsafe_allow_html=True,
     )
 
     st.dataframe(
@@ -3011,6 +4765,45 @@ else:
         the positive screen clause from entering the battery-life
         representation. The weighted local-context vector then emphasizes
         words nearest to the target aspect.
+    </p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+<div class="panel-shell" style="margin-top:1rem;">
+    <div class="panel-title">Exploratory Text Analytics</div>
+    <p style="color:#4D5970;line-height:1.75;">
+        Exploratory analysis was conducted on the SemEval training corpus
+        before model comparison. The analysis examined sentiment-class
+        distribution, Laptop versus Restaurant domain distribution, frequent
+        aspect terms, sentence-length distribution and high-frequency tokens
+        after preprocessing. These diagnostics were used to understand class
+        imbalance, corpus composition, common customer-experience targets and
+        the typical amount of textual context available for aspect-level
+        sentiment modelling.
+    </p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+<div class="panel-shell" style="margin-top:1rem;">
+    <div class="panel-title">Classifier Evaluation and Comparison</div>
+    <p style="color:#4D5970;line-height:1.75;">
+        Logistic Regression and Support Vector Machine were evaluated under
+        identical 200-dimensional Target Clause + Local Context GloVe features
+        and identical grouped five-fold cross-validation splits. Evaluation
+        included class-level precision, recall and F1-score for Negative,
+        Neutral and Positive sentiment, followed by macro averages, overall
+        accuracy and macro one-vs-rest ROC-AUC. SVM achieved 67.92% accuracy,
+        0.6264 macro precision, 0.6397 macro recall, 0.6307 macro F1-score and
+        0.8168 macro ROC-AUC, outperforming Logistic Regression across all five
+        aggregate measures.
     </p>
 </div>
 """,
