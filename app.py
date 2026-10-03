@@ -1258,7 +1258,67 @@ def analyse_reviews(reviews):
     st.session_state.analyses = analyses
     st.session_state.results_df = pd.DataFrame(all_rows)
 
+    # Remember to show balloons after the page reloads
+    # if every aspect in this analysis is positive.
+    all_results = []
+    for analysis in analyses:
+        all_results.extend(analysis["sentiments"])
+    st.session_state.celebrate = all_positive(all_results)
+
     return analyses, st.session_state.results_df
+
+
+def all_positive(results):
+    """Return True if there is at least one result and all are positive."""
+    if not results:
+        return False
+
+    for result in results:
+        if result["sentiment"].lower() != "positive":
+            return False
+
+    return True
+
+
+def aspect_position(result):
+    """Where the aspect starts in the review (used for sorting)."""
+    return result["aspect_start"]
+
+
+def highlight_review(text, sentiments):
+    """
+    Return the review as HTML with every detected aspect coloured by its
+    sentiment (green = positive, red = negative, amber = neutral).
+    This shows the user exactly which words the model scored.
+    """
+    # Work through the aspects from left to right in the review.
+    ordered = sorted(sentiments, key=aspect_position)
+
+    pieces = []
+    position = 0
+
+    for result in ordered:
+        start = result["aspect_start"]
+        end = result["aspect_end"]
+
+        # Skip an aspect that overlaps one we already highlighted.
+        if start < position:
+            continue
+
+        sentiment = result["sentiment"].lower()
+
+        # Plain text before the aspect, then the coloured aspect itself.
+        pieces.append(html.escape(text[position:start]))
+        pieces.append(
+            f'<mark class="hl-{sentiment}" title="{sentiment}">'
+            f"{html.escape(text[start:end])}</mark>"
+        )
+        position = end
+
+    # Whatever text is left after the last aspect.
+    pieces.append(html.escape(text[position:]))
+
+    return '<div class="highlighted-review">' + "".join(pieces) + "</div>"
 
 
 # ============================================================
@@ -1484,9 +1544,22 @@ def render_aspect_card(result):
         * 100
     )
 
+    # Positive cards get a small confetti burst (animated in main.css).
+    # Negative and neutral cards stay plain.
+    confetti = ""
+    if result["sentiment"].lower() == "positive":
+        confetti = (
+            '<div class="confetti">'
+            "<span>🎉</span><span>✨</span><span>🎊</span>"
+            "<span>✨</span><span>🎉</span><span>🎊</span>"
+            "</div>"
+        )
+
+    # Keep {confetti} on the same line as the card's opening tag:
+    # when it is empty, a line of its own would break the HTML.
     st.markdown(
         f"""
-<div class="aspect-card {card_class}">
+<div class="aspect-card {card_class}">{confetti}
     <div class="aspect-top">
         <div class="aspect-icon">{emoji}</div>
         <div>
@@ -1509,7 +1582,7 @@ def render_aspect_card(result):
             </div>
         </div>
         <div>
-            <div class="meta-label">Local Context</div>
+            <div class="meta-label">Words the model used</div>
             <div class="meta-value">
                 {result["local_context"]}
             </div>
@@ -1702,6 +1775,22 @@ def render_results(
             "No explicit aspect terms were detected."
         )
         return
+
+    # Explainability: show each review with its aspects coloured
+    # by the sentiment the model gave them.
+    st.caption(
+        "Highlighted words are the aspects the model scored "
+        "(green = positive, red = negative, amber = neutral)."
+    )
+    for analysis in analyses:
+        if analysis["sentiments"]:
+            st.markdown(
+                highlight_review(
+                    analysis["text"],
+                    analysis["sentiments"],
+                ),
+                unsafe_allow_html=True,
+            )
 
     for domain_name in sorted(
         domain_results
@@ -1990,6 +2079,12 @@ with st.sidebar:
 # ============================================================
 # PAGE — OVERVIEW
 # ============================================================
+
+# Balloons fly over the whole page when every aspect was positive.
+# pop() reads the flag and removes it, so they only show once.
+if st.session_state.pop("celebrate", False):
+    st.balloons()
+
 
 if st.session_state.page == "Overview":
 
@@ -4864,3 +4959,121 @@ else:
 """,
         unsafe_allow_html=True,
     )
+
+
+# ============================================================
+# FLOATING CHATBOT (bottom-right corner, shown on every page)
+# ============================================================
+
+CHATBOT_IMAGE = BASE_DIR / "assets" / "absabot.jpg"
+
+
+def chatbot_avatar():
+    """Use the chatbot picture if it exists, otherwise a robot emoji."""
+    if CHATBOT_IMAGE.exists():
+        return str(CHATBOT_IMAGE)
+    return "🤖"
+
+
+def chatbot_reply(analysis):
+    """Turn the analysis of one review into a short, friendly chat message."""
+    sentiments = analysis["sentiments"]
+
+    if not sentiments:
+        return (
+            "I couldn't find a product or restaurant feature in that. "
+            "Try mentioning one, for example the food, the screen "
+            "or the battery."
+        )
+
+    domain = analysis["domain"]["domain"]
+    lines = [f"Here's what I found in this **{domain}** review:"]
+
+    for result in sentiments:
+        # sentiment_style() gives back (card class, pill class, colour, emoji)
+        emoji = sentiment_style(result["sentiment"])[3]
+        confidence = result["confidence"] * 100
+        lines.append(
+            f"- {emoji} **{result['aspect']}**: "
+            f"{result['sentiment']} ({confidence:.0f}%)"
+        )
+
+    return "\n".join(lines)
+
+
+def render_chatbot():
+    """
+    Draw the chatbot button in the bottom-right corner. Clicking it opens a
+    small chat window: the user types a review and the bot answers with the
+    sentiment of every aspect, using the same model as the Analyze page.
+    """
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+
+    avatar = chatbot_avatar()
+
+    # key="chatbot_widget" gives this container the CSS class
+    # "st-key-chatbot_widget", which main.css pins to the bottom-right.
+    with st.container(key="chatbot_widget"):
+
+        if CHATBOT_IMAGE.exists():
+            st.image(str(CHATBOT_IMAGE), width=64)
+
+        with st.popover("Chat with AspectIQ"):
+
+            # The message history is drawn into this box further down.
+            history = st.container(height=320)
+
+            message = st.chat_input(
+                "Type a review...",
+                key="chatbot_input",
+            )
+
+            if st.button("Clear chat", key="chatbot_clear"):
+                st.session_state.chat_messages = []
+
+            # A new message: analyse it and store both sides of the chat.
+            if message:
+                analysis = analyse_review(
+                    len(st.session_state.chat_messages) + 1,
+                    message,
+                )
+                st.session_state.chat_messages.append(
+                    {"role": "user", "text": message}
+                )
+                st.session_state.chat_messages.append(
+                    {"role": "assistant", "analysis": analysis}
+                )
+
+                if all_positive(analysis["sentiments"]):
+                    st.balloons()
+
+            # Show the whole conversation inside the history box.
+            with history:
+                if not st.session_state.chat_messages:
+                    with st.chat_message("assistant", avatar=avatar):
+                        st.markdown(
+                            "Hi! Type a review and I'll tell you how the "
+                            "customer feels about each feature."
+                        )
+
+                for chat in st.session_state.chat_messages:
+                    if chat["role"] == "user":
+                        with st.chat_message("user"):
+                            st.markdown(chat["text"])
+                    else:
+                        analysis = chat["analysis"]
+                        with st.chat_message("assistant", avatar=avatar):
+                            st.markdown(chatbot_reply(analysis))
+
+                            if analysis["sentiments"]:
+                                st.markdown(
+                                    highlight_review(
+                                        analysis["text"],
+                                        analysis["sentiments"],
+                                    ),
+                                    unsafe_allow_html=True,
+                                )
+
+
+render_chatbot()

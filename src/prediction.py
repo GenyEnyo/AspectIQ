@@ -16,6 +16,10 @@ MODEL_DIR = BASE_DIR / "models"
 FINAL_MODEL_FILE = MODEL_DIR / "best_target_clause_local_3class.joblib"
 CONTEXT_WINDOW = 5
 
+# A comma-separated piece must have at least this many words to be used on
+# its own. Shorter pieces (e.g. "The food,") carry no opinion by themselves.
+MIN_PIECE_WORDS = 4
+
 
 def load_prediction_assets():
     if not FINAL_MODEL_FILE.exists():
@@ -80,6 +84,26 @@ def find_aspect_span(text: str, aspect: str):
     return True, match.start(), match.end()
 
 
+def find_aspect_piece(text, aspect):
+    """
+    Cut the review at commas, semicolons and colons, and return the piece
+    that mentions the aspect. This stops a later part of the sentence
+    (e.g. ", and it comes with 8GB of RAM") from changing the sentiment.
+    If that piece is too short to hold an opinion, the full text is used.
+    """
+    pieces = re.split(r"[,;:]", str(text))
+
+    for piece in pieces:
+        found, _, _ = find_aspect_span(piece, aspect)
+
+        if found:
+            if len(piece.split()) >= MIN_PIECE_WORDS:
+                return piece
+            return text
+
+    return text
+
+
 def build_prediction_feature(text, aspect, glove_model):
     found, start, end = find_aspect_span(
         text=text,
@@ -91,8 +115,10 @@ def build_prediction_feature(text, aspect, glove_model):
             f"Aspect '{aspect}' was not found in the review text."
         )
 
+    # Only the part of the review that talks about this aspect is
+    # turned into features.
     feature, metadata, _ = build_target_clause_local_feature(
-        text=text,
+        text=find_aspect_piece(text, aspect),
         aspect=aspect,
         glove_model=glove_model,
         context_window=CONTEXT_WINDOW,

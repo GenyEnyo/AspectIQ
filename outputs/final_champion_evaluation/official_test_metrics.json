@@ -1,0 +1,23 @@
+{
+  "task": "3-class",
+  "model": "SVM",
+  "kernel": "rbf",
+  "C": 1.0,
+  "gamma": "scale",
+  "class_weight": "balanced",
+  "representation": "Contrast-Aware Enhanced GloVe",
+  "dimensions": 300,
+  "context_window": 5,
+  "distance_weighted": true,
+  "contrast_aware": true,
+  "train_samples": 5841,
+  "test_samples": 1758,
+  "train_test_exact_target_overlap": 2,
+  "accuracy": 0.7030716723549488,
+  "precision_macro": 0.621850628194834,
+  "recall_macro": 0.6436978243569277,
+  "f1_macro": 0.627450201823137,
+  "roc_auc_macro_ovr": 0.8344933867713126,
+  "selection_rule": "Hyperparameters and representation were frozen using training-only cross-validation before official test evaluation.",
+  "roc_auc_score_note": "SVM decision scores are softmax-normalised for multiclass ROC-AUC; they are not calibrated probabilities."
+}

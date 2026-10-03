@@ -718,3 +718,83 @@ div[data-testid="stMetricValue"] {
     }
 }
 
+
+
+/* ============================================================
+   NEW: CONFETTI, HIGHLIGHTING AND CHATBOT
+   ============================================================ */
+
+/* Let the confetti sit inside the card without spilling out. */
+.aspect-card {
+    position: relative;
+    overflow: hidden;
+}
+
+/* Each confetti piece starts just above the card... */
+.confetti span {
+    position: absolute;
+    top: -1.5rem;
+    font-size: 1.1rem;
+    pointer-events: none;
+    animation: confetti-fall 1.8s ease-in forwards;
+}
+
+/* ...at a different spot and a slightly different time. */
+.confetti span:nth-child(1) { left: 8%;  animation-delay: 0s;   }
+.confetti span:nth-child(2) { left: 24%; animation-delay: .25s; }
+.confetti span:nth-child(3) { left: 42%; animation-delay: .1s;  }
+.confetti span:nth-child(4) { left: 60%; animation-delay: .35s; }
+.confetti span:nth-child(5) { left: 76%; animation-delay: .15s; }
+.confetti span:nth-child(6) { left: 90%; animation-delay: .3s;  }
+
+/* Fall down, spin, and fade away (plays once). */
+@keyframes confetti-fall {
+    0%   { transform: translateY(0) rotate(0deg);      opacity: 1; }
+    100% { transform: translateY(170px) rotate(360deg); opacity: 0; }
+}
+
+/* Hovering a positive card plays the confetti again.
+   Switching to a copy of the animation (a new name) makes
+   the browser start it again from the beginning. */
+.aspect-positive:hover .confetti span {
+    animation-name: confetti-fall-again;
+}
+
+@keyframes confetti-fall-again {
+    0%   { transform: translateY(0) rotate(0deg);      opacity: 1; }
+    100% { transform: translateY(170px) rotate(360deg); opacity: 0; }
+}
+
+/* The review text with coloured aspects. */
+.highlighted-review {
+    background: #FFFFFF;
+    border: 1px solid #E3E8F0;
+    border-radius: 12px;
+    padding: .7rem .9rem;
+    margin-bottom: .6rem;
+    line-height: 1.8;
+    color: #1F2A44;
+}
+
+/* One colour per sentiment. */
+.hl-positive { background: #D7F5DF; color: #136B2E; border-radius: 4px; padding: 0 .2rem; }
+.hl-negative { background: #FBD9D9; color: #9B1C1C; border-radius: 4px; padding: 0 .2rem; }
+.hl-neutral  { background: #FDEBC8; color: #8A5300; border-radius: 4px; padding: 0 .2rem; }
+
+/* Pin the chatbot to the bottom-right corner of the screen.
+   The high z-index keeps it on top of the page content. */
+.st-key-chatbot_widget {
+    position: fixed;
+    bottom: 1.2rem;
+    right: 1.2rem;
+    z-index: 1000001;
+    width: auto !important;
+    /* No box behind it: just the bot picture and the button. */
+    background: transparent;
+}
+
+/* Give the "Chat with AspectIQ" button a white background so it
+   stays readable on top of the dark sidebar. */
+.st-key-chatbot_widget button {
+    background: #FFFFFF;
+}

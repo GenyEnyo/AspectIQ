@@ -147,7 +147,17 @@ def find_lexicon_aspects(text: str):
     )
 
     selected = []
+    selected_canonical = set()
+
     for candidate in matches:
+        canonical = candidate[
+            "canonical_aspect"
+        ]
+
+        # One prediction per canonical aspect per analysis unit.
+        if canonical in selected_canonical:
+            continue
+
         overlaps = any(
             not (
                 candidate["end"] <= chosen["start"]
@@ -155,10 +165,19 @@ def find_lexicon_aspects(text: str):
             )
             for chosen in selected
         )
-        if not overlaps:
-            selected.append(candidate)
 
-    selected.sort(key=lambda item: item["start"])
+        if not overlaps:
+            selected.append(
+                candidate
+            )
+            selected_canonical.add(
+                canonical
+            )
+
+    selected.sort(
+        key=lambda item: item["start"]
+    )
+
     return selected
 
 
@@ -334,9 +353,81 @@ def detect_domain(text: str, aspects=None):
     }
 
 
+def filter_aspects_for_domain(
+    aspects,
+    domain: str,
+):
+    """
+    Keep lexicon aspects supported by the detected domain.
+
+    This prevents a term learned only from the Restaurant corpus from being
+    presented as a Laptop aspect, and vice versa.
+    """
+    if not aspects:
+        return []
+
+    if not domain or domain == "Unknown":
+        return aspects
+
+    knowledge = load_training_knowledge()
+    filtered = []
+
+    for item in aspects:
+        canonical = item[
+            "canonical_aspect"
+        ]
+
+        if item.get(
+            "source"
+        ) != "training_lexicon":
+            filtered.append(
+                item
+            )
+            continue
+
+        counts = knowledge[
+            "aspect_domain_counts"
+        ].get(
+            canonical,
+            {},
+        )
+
+        if counts.get(
+            domain,
+            0,
+        ) > 0:
+            filtered.append(
+                item
+            )
+
+    return filtered
+
+
 def detect_review_structure(text: str):
-    aspects = detect_aspects(text)
-    domain = detect_domain(text=text, aspects=aspects)
+    preliminary_aspects = detect_aspects(
+        text
+    )
+
+    domain = detect_domain(
+        text=text,
+        aspects=preliminary_aspects,
+    )
+
+    aspects = filter_aspects_for_domain(
+        preliminary_aspects,
+        domain[
+            "domain"
+        ],
+    )
+
+    # If domain filtering removes every lexicon hit, retain the original
+    # candidates rather than silently returning no aspect at all.
+    if (
+        preliminary_aspects
+        and not aspects
+    ):
+        aspects = preliminary_aspects
+
     return {
         "domain": domain,
         "aspects": aspects,
